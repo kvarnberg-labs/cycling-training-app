@@ -2,7 +2,7 @@
 
 from datetime import datetime, date
 from typing import Optional, List
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, EmailStr
 
 
 # ── User ──
@@ -184,3 +184,25 @@ class StravaAuthUrl(BaseModel):
 class StravaTokenResponse(BaseModel):
     success: bool
     message: str
+
+
+# ── Auth ──
+
+class RegisterRequest(BaseModel):
+    email: str
+    password: str = Field(..., min_length=6)
+    name: Optional[str] = None
+    ftp: Optional[int] = 200
+    weight_kg: Optional[float] = 75.0
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+    user: Optional[UserOut] = None

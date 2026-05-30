@@ -219,38 +219,80 @@
                 dashboard: { ctl: 0, atl: 0, tsb: 0, ftp: 200, this_week_tss: 0, recent_activities_count: 0, training_goal: 'base' },
                 workouts: [],
                 recentActivities: [],
+
+                getHeaders() {
+                    const h = { 'Content-Type': 'application/json' };
+                    const token = localStorage.getItem('token');
+                    if (token) h['Authorization'] = 'Bearer ' + token;
+                    return h;
+                },
+
                 async init() {
                     await this.loadDashboard();
                 },
                 async loadDashboard() {
+                    const headers = this.getHeaders();
                     try {
-                        const res = await fetch('/api/dashboard/');
-                        if (!res.ok) return;
-                        const data = await res.json();
-                        this.dashboard = {
-                            ctl: data.current_ctl || 0,
-                            atl: data.current_atl || 0,
-                            tsb: data.current_tsb || 0,
-                            ftp: data.ftp || 200,
-                            this_week_tss: data.this_week_tss || 0,
-                            recent_activities_count: data.recent_activities_count || 0,
-                            training_goal: data.training_goal || 'base',
-                        };
-                        this.stravaConnected = data.strava_connected || false;
-                        this.workouts = (data.suggested_workouts || []).map(w => ({
-                            ...w,
-                            scheduled_date: w.scheduled_date || w.scheduled_date
-                        }));
+                        const res = await fetch('/api/dashboard/', { headers });
+                        if (res.status === 401) {
+                            // Try refreshing the token
+                            const refreshed = await this.refreshToken();
+                            if (!refreshed) {
+                                window.location.href = '/api/auth/login';
+                                return;
+                            }
+                            // Retry with new token
+                            headers['Authorization'] = 'Bearer ' + localStorage.getItem('access_token');
+                            const res2 = await fetch('/api/dashboard/', { headers });
+                            if (!res2.ok) { window.location.href = '/api/auth/login'; return; }
+                            const data = await res2.json();
+                            this._setDashboardData(data);
+                        } else if (!res.ok) return;
+                        else {
+                            const data = await res.json();
+                            this._setDashboardData(data);
+                        }
                     } catch(e) {}
                     try {
-                        const res = await fetch('/api/strava/activities?limit=5');
+                        const res = await fetch('/api/strava/activities?limit=5', { headers });
                         if (res.ok) this.recentActivities = await res.json();
                     } catch(e) {}
                 },
+                _setDashboardData(data) {
+                    this.dashboard = {
+                        ctl: data.current_ctl || 0,
+                        atl: data.current_atl || 0,
+                        tsb: data.current_tsb || 0,
+                        ftp: data.ftp || 200,
+                        this_week_tss: data.this_week_tss || 0,
+                        recent_activities_count: data.recent_activities_count || 0,
+                        training_goal: data.training_goal || 'base',
+                    };
+                    this.stravaConnected = data.strava_connected || false;
+                    this.workouts = (data.suggested_workouts || []).map(w => ({
+                        ...w,
+                        scheduled_date: w.scheduled_date || w.scheduled_date
+                    }));
+                },
+                async refreshToken() {
+                    const token = localStorage.getItem('token');
+                    if (!token) return false;
+                    try {
+                        const res = await fetch('/api/auth/refresh', {
+                            method: 'POST',
+                            headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+                        });
+                        if (!res.ok) return false;
+                        const data = await res.json();
+                        localStorage.setItem('token', data.access_token);
+                        return true;
+                    } catch(e) { return false; }
+                },
                 async syncStrava() {
                     this.syncing = true;
+                    const headers = { 'Authorization': 'Bearer ' + localStorage.getItem('access_token') };
                     try {
-                        const res = await fetch('/api/strava/sync?days_back=90', { method: 'POST' });
+                        const res = await fetch('/api/strava/sync?days_back=90', { method: 'POST', headers });
                         const data = await res.json();
                         alert('Synced ' + data.synced + ' activities!');
                         await this.loadDashboard();
@@ -260,21 +302,21 @@
                 async generateWeek() {
                     this.generating = true;
                     try {
-                        const res = await fetch('/api/workouts/generate-week', { method: 'POST' });
+                        const res = await fetch('/api/workouts/generate-week', { method: 'POST', headers: this.getHeaders() });
                         if (res.ok) await this.loadDashboard();
                     } catch(e) { alert('Failed to generate'); }
                     this.generating = false;
                 },
                 async acceptWorkout(id) {
-                    const res = await fetch('/api/workouts/' + id + '/accept', { method: 'PUT' });
+                    const res = await fetch('/api/workouts/' + id + '/accept', { method: 'PUT', headers: this.getHeaders() });
                     if (res.ok) await this.loadDashboard();
                 },
                 async skipWorkout(id) {
-                    const res = await fetch('/api/workouts/' + id + '/skip', { method: 'PUT' });
+                    const res = await fetch('/api/workouts/' + id + '/skip', { method: 'PUT', headers: this.getHeaders() });
                     if (res.ok) await this.loadDashboard();
                 },
                 async completeWorkout(id) {
-                    const res = await fetch('/api/workouts/' + id + '/complete', { method: 'PUT' });
+                    const res = await fetch('/api/workouts/' + id + '/complete', { method: 'PUT', headers: this.getHeaders() });
                     if (res.ok) await this.loadDashboard();
                 },
                 formatDate(d) {

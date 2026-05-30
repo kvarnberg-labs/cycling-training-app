@@ -6,17 +6,21 @@ Run with: uvicorn app.main:app --reload
 from contextlib import asynccontextmanager
 import logging
 from datetime import datetime
+from typing import Optional
 
 from fastapi import FastAPI, Request
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from fastapi import Depends
 from sqlalchemy import func
 
 from app.config import settings
 from app.database import init_db, SessionLocal
-from app.routers import strava, workouts, dashboard, user
+from app.routers import strava, workouts, dashboard, user, auth, analytics
 from app.services.metrics_compute import compute_all_users_metrics
+from app.auth import optional_current_user, get_current_user
+from app.models import User
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -69,13 +73,20 @@ app.include_router(strava.router, prefix="/api")
 app.include_router(workouts.router, prefix="/api")
 app.include_router(dashboard.router, prefix="/api")
 app.include_router(user.router, prefix="/api")
+app.include_router(analytics.router, prefix="/api")
+app.include_router(auth.router, prefix="/api")
 
 
 # ── Web UI Routes ──
 
 @app.get("/")
-async def index(request: Request):
+async def index(
+    request: Request,
+    current_user: Optional[User] = Depends(optional_current_user),
+):
     """Main dashboard page."""
+    if not current_user:
+        return RedirectResponse(url="/auth/login", status_code=302)
     return templates.TemplateResponse("index.html", {
         "request": request,
         "title": settings.app_name,
@@ -85,8 +96,13 @@ async def index(request: Request):
 
 
 @app.get("/calendar")
-async def calendar_view(request: Request):
+async def calendar_view(
+    request: Request,
+    current_user: Optional[User] = Depends(optional_current_user),
+):
     """Weekly calendar page."""
+    if not current_user:
+        return RedirectResponse(url="/auth/login", status_code=302)
     return templates.TemplateResponse("calendar.html", {
         "request": request,
         "title": "Calendar — " + settings.app_name,
@@ -94,8 +110,13 @@ async def calendar_view(request: Request):
 
 
 @app.get("/settings")
-async def settings_view(request: Request):
+async def settings_view(
+    request: Request,
+    current_user: Optional[User] = Depends(optional_current_user),
+):
     """Settings page."""
+    if not current_user:
+        return RedirectResponse(url="/auth/login", status_code=302)
     return templates.TemplateResponse("settings.html", {
         "request": request,
         "title": "Settings — " + settings.app_name,
@@ -103,11 +124,30 @@ async def settings_view(request: Request):
 
 
 @app.get("/pmc")
-async def pmc_view(request: Request):
+async def pmc_view(
+    request: Request,
+    current_user: Optional[User] = Depends(optional_current_user),
+):
     """Performance Management Chart page."""
+    if not current_user:
+        return RedirectResponse(url="/auth/login", status_code=302)
     return templates.TemplateResponse("pmc.html", {
         "request": request,
         "title": "PMC — " + settings.app_name,
+    })
+
+
+@app.get("/insights")
+async def insights_view(
+    request: Request,
+    current_user: Optional[User] = Depends(optional_current_user),
+):
+    """Workout history analytics / insights page."""
+    if not current_user:
+        return RedirectResponse(url="/auth/login", status_code=302)
+    return templates.TemplateResponse("insights.html", {
+        "request": request,
+        "title": "Insights — " + settings.app_name,
     })
 
 

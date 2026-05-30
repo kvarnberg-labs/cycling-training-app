@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title }}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        * { font-family: 'Inter', sans-serif; }
+        body { background: #0f172a; color: #e2e8f0; }
+        .card { background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 1.5rem; }
+        .btn { padding: 0.5rem 1.25rem; border-radius: 8px; font-weight: 600; font-size: 0.875rem; cursor: pointer; border: none; }
+        .btn-ghost { background: transparent; color: #94a3b8; border: 1px solid #334155; }
+        .btn-ghost:hover { background: #1e293b; }
+        [x-cloak] { display: none !important; }
+        canvas { max-height: 400px; max-width: 100%; }
+    </style>
+</head>
+<body x-data="insightsApp()" x-init="init()" class="min-h-screen">
+    <nav class="border-b border-slate-700/50 bg-slate-900/80 backdrop-blur sticky top-0 z-50">
+        <div class="max-w-6xl mx-auto px-4 h-14 flex items-center justify-between">
+            <a href="/" class="text-lg font-bold tracking-tight"><span class="text-cyan-400">&#x1F6B2;</span> CycleTrain</a>
+            <div class="flex gap-2">
+                <a href="/" class="btn btn-ghost text-xs">Dashboard</a>
+                <a href="/calendar" class="btn btn-ghost text-xs">Calendar</a>
+                <a href="/pmc" class="btn btn-ghost text-xs">PMC</a>
+                <a href="/insights" class="btn btn-ghost text-xs">Insights</a>
+                <a href="/settings" class="btn btn-ghost text-xs">Settings</a>
+            </div>
+        </div>
+    </nav>
+
+    <main class="max-w-6xl mx-auto px-4 py-6">
+        <div class="flex items-center justify-between mb-6">
+            <h1 class="text-2xl font-bold">Training Insights</h1>
+            <div class="text-sm text-slate-400">
+                Last 12 weeks
+            </div>
+        </div>
+
+        <!-- Summary stat cards -->
+        <div class="grid grid-cols-3 gap-3 sm:gap-4 mb-6" x-show="data">
+            <div class="card text-center">
+                <div class="text-xs text-slate-400 stat-label">Total TSS</div>
+                <div class="text-2xl font-bold text-cyan-400" x-text="summary.totalTss.toFixed(0)">0</div>
+            </div>
+            <div class="card text-center">
+                <div class="text-xs text-slate-400 stat-label">Total Hours</div>
+                <div class="text-2xl font-bold text-blue-400" x-text="summary.totalHours.toFixed(1)">0</div>
+            </div>
+            <div class="card text-center">
+                <div class="text-xs text-slate-400 stat-label">Rides</div>
+                <div class="text-2xl font-bold text-emerald-400" x-text="summary.totalRides">0</div>
+            </div>
+        </div>
+
+        <!-- Chart grid -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+            <div class="card">
+                <h2 class="text-lg font-semibold mb-3">Weekly TSS</h2>
+                <canvas id="tssChart"></canvas>
+            </div>
+            <div class="card">
+                <h2 class="text-lg font-semibold mb-3">Workout Type Distribution</h2>
+                <canvas id="typeChart"></canvas>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2 class="text-lg font-semibold mb-3">Training Load Progression (CTL)</h2>
+            <canvas id="ctlChart"></canvas>
+        </div>
+    </main>
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+    {% raw %}
+    <script>
+        function insightsApp() {
+            return {
+                data: null,
+                summary: { totalTss: 0, totalHours: 0, totalRides: 0 },
+                tssChart: null,
+                typeChart: null,
+                ctlChart: null,
+
+                getHeaders() {
+                    const h = { 'Content-Type': 'application/json' };
+                    const token = localStorage.getItem('token');
+                    if (token) h['Authorization'] = 'Bearer ' + token;
+                    return h;
+                },
+
+                async init() {
+                    await this.loadData();
+                },
+                async loadData() {
+                    try {
+                        const res = await fetch('/api/analytics/weekly', { headers: this.getHeaders() });
+                        if (res.status === 401) {
+                            window.location.href = '/auth/login';
+                            return;
+                        }
+                        if (!res.ok) return;
+                        this.data = await res.json();
+                        this.computeSummary();
+                        this.renderCharts();
+                    } catch (e) {
+                        console.error('Failed to load analytics:', e);
+                    }
+                },
+                computeSummary() {
+                    let totalTss = 0, totalHours = 0, totalRides = 0;
+                    for (const w of this.data.weeks) {
+                        totalTss += w.total_tss;
+                        totalHours += w.total_hours;
+                        totalRides += w.ride_count;
+                    }
+                    this.summary = { totalTss, totalHours, totalRides };
+                },
+                renderCharts() {
+                    this.renderTssChart();
+                    this.renderTypeChart();
+                    this.renderCtlChart();
+                },
+                renderTssChart() {
+                    const weeks = this.data.weeks;
+                    const labels = weeks.map(w => {
+                        const d = new Date(w.week_start + 'T00:00:00');
+                        return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+                    });
+                    const tssValues = weeks.map(w => w.total_tss);
+                    const hoursValues = weeks.map(w => w.total_hours);
+
+                    if (this.tssChart) this.tssChart.destroy();
+                    const ctx = document.getElementById('tssChart').getContext('2d');
+                    this.tssChart = new Chart(ctx, {
+                        type: 'bar',
+                        data: {
+                            labels,
+                            datasets: [
+                                {
+                                    label: 'TSS',
+                                    data: tssValues,
+                                    backgroundColor: 'rgba(34, 211, 238, 0.7)',
+                                    borderColor: '#22d3ee',
+                                    borderWidth: 1,
+                                    borderRadius: 4,
+                                    yAxisID: 'y',
+                                },
+                                {
+                                    label: 'Hours',
+                                    data: hoursValues,
+                                    backgroundColor: 'rgba(59, 130, 246, 0.5)',
+                                    borderColor: '#3b82f6',
+                                    borderWidth: 1,
+                                    borderRadius: 4,
+                                    yAxisID: 'y1',
+                                }
+                            ]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            interaction: {
+                                intersect: false,
+                                mode: 'index',
+                            },
+                            plugins: {
+                                legend: {
+                                    labels: { color: '#94a3b8', font: { size: 12 } }
+                                },
+                                tooltip: {
+                                    backgroundColor: '#1e293b',
+                                    titleColor: '#e2e8f0',
+                                    bodyColor: '#94a3b8',
+                                    borderColor: '#334155',
+                                    borderWidth: 1,
+                                    padding: 12,
+                                }
+                            },
+                            scales: {
+                                x: {
+                                    grid: { color: 'rgba(51, 65, 85, 0.5)' },
+                                    ticks: { color: '#64748b', maxTicksLimit: 12 }
+                                },
+                                y: {
+                                    beginAtZero: true,
+                                    grid: { color: 'rgba(51, 65, 85, 0.5)' },
+                                    ticks: { color: '#64748b' },
+                                    title: { display: true, text: 'TSS', color: '#94a3b8' }
+                                },
+                                y1: {
+                                    beginAtZero: true,
+                                    position: 'right',
+                                    grid: { display: false },
+                                    ticks: { color: '#64748b' },
+                                    title: { display: true, text: 'Hours', color: '#94a3b8' }
+                                }
+                            }
+                        }
+                    });
+                },
+                renderTypeChart() {
+                    const dist = this.data.overall_type_distribution || {};
+                    const typeColors = {
+                        endurance: '#3b82f6',
+                        tempo: '#8b5cf6',
+                        threshold: '#a855f7',
+                        vo2max: '#db2777',
+                        sprint: '#ef4444',
+                        recovery: '#22d3ee',
+                        interval: '#f59e0b',
+                        custom: '#64748b',
+                    };
+                    const labels = Object.keys(dist);
+                    const values = Object.values(dist);
+                    const colors = labels.map(l => typeColors[l] || '#64748b');
+
+                    if (this.typeChart) this.typeChart.destroy();
+                    const ctx = document.getElementById('typeChart').getContext('2d');
+                    this.typeChart = new Chart(ctx, {
+                        type: 'doughnut',
+                        data: {
+                            labels,
+                            datasets: [{
+                                data: values,
+                                backgroundColor: colors,
+                                borderColor: '#1e293b',
+                                borderWidth: 2,
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            plugins: {
+                                legend: {
+                                    position: 'right',
+                                    labels: {
+                                        color: '#94a3b8',
+                                        font: { size: 12 },
+                                        padding: 12,
+                                        usePointStyle: true,
+                                    }
+                                },
+                                tooltip: {
+                                    backgroundColor: '#1e293b',
+                                    titleColor: '#e2e8f0',
+                                    bodyColor: '#94a3b8',
+                                    borderColor: '#334155',
+                                    borderWidth: 1,
+                                    padding: 12,
+                                    callbacks: {
+                                        label: function (context) {
+                                            const total = context.dataset.data.reduce((a, b) => a + b, 0);
+                                            const pct = ((context.parsed / total) * 100).toFixed(1);
+                                            return context.label + ': ' + context.parsed + ' (' + pct + '%)';
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    });
+                },
+                renderCtlChart() {
+                    const trend = this.data.ctl_trend || [];
+                    if (trend.length === 0) return;
+
+                    const labels = trend.map(t => {
+                        const d = new Date(t.date + 'T00:00:00');
+                        return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+                    });
+                    const ctlData = trend.map(t => t.ctl);
+                    const atlData = trend.map(t => t.atl);
+
+                    if (this.ctlChart) this.ctlChart.destroy();
+                    const ctx = document.getElementById('ctlChart').getContext('2d');
+                    this.ctlChart = new Chart(ctx, {
+                        type: 'line',
+                        data: {
+                            labels,
+                            datasets: [
+                                {
+                                    label: 'CTL (Fitness)',
+                                    data: ctlData,
+                                    borderColor: '#22d3ee',
+                                    backgroundColor: 'rgba(34, 211, 238, 0.1)',
+                                    fill: true,
+                                    tension: 0.4,
+                                    pointRadius: 0,
+                                    borderWidth: 2,
+                                },
+                                {
+                                    label: 'ATL (Fatigue)',
+                                    data: atlData,
+                                    borderColor: '#fb7185',
+                                    backgroundColor: 'rgba(251, 113, 133, 0.1)',
+                                    fill: true,
+                                    tension: 0.4,
+                                    pointRadius: 0,
+                                    borderWidth: 2,
+                                },
+                            ]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            interaction: {
+                                intersect: false,
+                                mode: 'index',
+                            },
+                            plugins: {
+                                legend: {
+                                    labels: { color: '#94a3b8', font: { size: 12 } }
+                                },
+                                tooltip: {
+                                    backgroundColor: '#1e293b',
+                                    titleColor: '#e2e8f0',
+                                    bodyColor: '#94a3b8',
+                                    borderColor: '#334155',
+                                    borderWidth: 1,
+                                    padding: 12,
+                                    callbacks: {
+                                        label: context => context.dataset.label + ': ' + context.parsed.y.toFixed(1)
+                                    }
+                                }
+                            },
+                            scales: {
+                                x: {
+                                    grid: { color: 'rgba(51, 65, 85, 0.5)' },
+                                    ticks: { color: '#64748b', maxTicksLimit: 15 }
+                                },
+                                y: {
+                                    beginAtZero: true,
+                                    grid: { color: 'rgba(51, 65, 85, 0.5)' },
+                                    ticks: { color: '#64748b' }
+                                }
+                            }
+                        }
+                    });
+                }
+            }
+        }
+    </script>
+    {% endraw %}
+</body>
+</html>

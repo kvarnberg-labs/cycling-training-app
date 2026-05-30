@@ -1,6 +1,6 @@
 """Workouts router — CRUD for planned and logged workouts."""
 
-from datetime import date, timedelta, datetime
+from datetime import date, timedelta
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -8,20 +8,12 @@ from sqlalchemy.orm import Session
 from sqlalchemy import desc
 
 from app.database import get_db
-from app.models import User, Workout, WorkoutStatus, StravaActivity
+from app.models import User, Workout, WorkoutStatus
 from app.schemas import WorkoutCreate, WorkoutOut, WorkoutUpdate
+from app.auth import get_current_user
 from app.services.recommendation_engine import generate_weekly_plan
-from app.services.training_load import (
-    pmc_series,
-    calculate_tss,
-    exp_weighted_avg,
-)
 
 router = APIRouter(prefix="/workouts", tags=["workouts"])
-
-
-def _get_first_user(db: Session) -> Optional[User]:
-    return db.query(User).first()
 
 
 @router.get("/", response_model=List[WorkoutOut])
@@ -29,14 +21,11 @@ def list_workouts(
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
     status: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """List workouts with optional date range and status filters."""
-    user = _get_first_user(db)
-    if not user:
-        return []
-
-    query = db.query(Workout).filter(Workout.user_id == user.id)
+    query = db.query(Workout).filter(Workout.user_id == current_user.id)
 
     if start_date:
         query = query.filter(Workout.scheduled_date >= start_date)
@@ -51,15 +40,12 @@ def list_workouts(
 @router.post("/", response_model=WorkoutOut, status_code=201)
 def create_workout(
     workout_data: WorkoutCreate,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """Create a new workout (manual log or scheduled workout)."""
-    user = _get_first_user(db)
-    if not user:
-        raise HTTPException(status_code=400, detail="No user found")
-
     workout = Workout(
-        user_id=user.id,
+        user_id=current_user.id,
         scheduled_date=workout_data.scheduled_date,
         scheduled_time=workout_data.scheduled_time,
         workout_type=workout_data.workout_type,
@@ -81,9 +67,16 @@ def create_workout(
 
 
 @router.get("/{workout_id}", response_model=WorkoutOut)
-def get_workout(workout_id: int, db: Session = Depends(get_db)):
+def get_workout(
+    workout_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     """Get a single workout by ID."""
-    workout = db.query(Workout).filter(Workout.id == workout_id).first()
+    workout = db.query(Workout).filter(
+        Workout.id == workout_id,
+        Workout.user_id == current_user.id,
+    ).first()
     if not workout:
         raise HTTPException(status_code=404, detail="Workout not found")
     return workout
@@ -93,10 +86,14 @@ def get_workout(workout_id: int, db: Session = Depends(get_db)):
 def update_workout(
     workout_id: int,
     update_data: WorkoutUpdate,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """Update a workout (change status, log results, etc.)."""
-    workout = db.query(Workout).filter(Workout.id == workout_id).first()
+    workout = db.query(Workout).filter(
+        Workout.id == workout_id,
+        Workout.user_id == current_user.id,
+    ).first()
     if not workout:
         raise HTTPException(status_code=404, detail="Workout not found")
 
@@ -110,9 +107,16 @@ def update_workout(
 
 
 @router.delete("/{workout_id}", status_code=204)
-def delete_workout(workout_id: int, db: Session = Depends(get_db)):
+def delete_workout(
+    workout_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     """Delete a workout."""
-    workout = db.query(Workout).filter(Workout.id == workout_id).first()
+    workout = db.query(Workout).filter(
+        Workout.id == workout_id,
+        Workout.user_id == current_user.id,
+    ).first()
     if not workout:
         raise HTTPException(status_code=404, detail="Workout not found")
     db.delete(workout)
@@ -122,17 +126,10 @@ def delete_workout(workout_id: int, db: Session = Depends(get_db)):
 @router.post("/generate-week", response_model=List[WorkoutOut])
 def generate_week(
     week_start: date = Query(default=None, description="Monday of the target week"),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Generate workout recommendations for a week.
-
-    Analyzes training load, recent workouts, and the user's goal
-    to recommend a week of structured workouts.
-    """
-    user = _get_first_user(db)
-    if not user:
-        raise HTTPException(status_code=400, detail="No user found")
-
+    """Generate workout recommendations for a week."""
     if not week_start:
         today = date.today()
         week_start = today - timedelta(days=today.weekday())
@@ -141,10 +138,9 @@ def generate_week(
 
     # Get current training metrics
     from app.models import TrainingMetrics
-
     latest_metrics = (
         db.query(TrainingMetrics)
-        .filter(TrainingMetrics.user_id == user.id)
+        .filter(TrainingMetrics.user_id == current_user.id)
         .order_by(desc(TrainingMetrics.date))
         .first()
     )
@@ -158,7 +154,7 @@ def generate_week(
     recent_workouts = (
         db.query(Workout)
         .filter(
-            Workout.user_id == user.id,
+            Workout.user_id == current_user.id,
             Workout.scheduled_date >= thirty_days_ago,
             Workout.status == WorkoutStatus.COMPLETED,
         )
@@ -169,7 +165,7 @@ def generate_week(
     existing = (
         db.query(Workout)
         .filter(
-            Workout.user_id == user.id,
+            Workout.user_id == current_user.id,
             Workout.scheduled_date >= week_start,
             Workout.scheduled_date <= week_end,
         )
@@ -178,12 +174,12 @@ def generate_week(
 
     # Generate recommendations
     recommendations = generate_weekly_plan(
-        user_id=user.id,
+        user_id=current_user.id,
         ctl=ctl,
         atl=atl,
         tsb=tsb,
-        goal=user.training_goal,
-        ftp=user.ftp or 200,
+        goal=current_user.training_goal,
+        ftp=current_user.ftp or 200,
         recent_workouts=recent_workouts,
         existing_scheduled=existing,
         week_start=week_start,
@@ -203,9 +199,16 @@ def generate_week(
 
 
 @router.put("/{workout_id}/accept", response_model=WorkoutOut)
-def accept_workout(workout_id: int, db: Session = Depends(get_db)):
-    """Accept a suggested workout (moves it from suggested to accepted)."""
-    workout = db.query(Workout).filter(Workout.id == workout_id).first()
+def accept_workout(
+    workout_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Accept a suggested workout."""
+    workout = db.query(Workout).filter(
+        Workout.id == workout_id,
+        Workout.user_id == current_user.id,
+    ).first()
     if not workout:
         raise HTTPException(status_code=404, detail="Workout not found")
     workout.status = WorkoutStatus.ACCEPTED
@@ -215,9 +218,16 @@ def accept_workout(workout_id: int, db: Session = Depends(get_db)):
 
 
 @router.put("/{workout_id}/complete", response_model=WorkoutOut)
-def complete_workout(workout_id: int, db: Session = Depends(get_db)):
+def complete_workout(
+    workout_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     """Mark a workout as completed."""
-    workout = db.query(Workout).filter(Workout.id == workout_id).first()
+    workout = db.query(Workout).filter(
+        Workout.id == workout_id,
+        Workout.user_id == current_user.id,
+    ).first()
     if not workout:
         raise HTTPException(status_code=404, detail="Workout not found")
     workout.status = WorkoutStatus.COMPLETED
@@ -227,9 +237,16 @@ def complete_workout(workout_id: int, db: Session = Depends(get_db)):
 
 
 @router.put("/{workout_id}/skip", response_model=WorkoutOut)
-def skip_workout(workout_id: int, db: Session = Depends(get_db)):
+def skip_workout(
+    workout_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     """Skip a workout."""
-    workout = db.query(Workout).filter(Workout.id == workout_id).first()
+    workout = db.query(Workout).filter(
+        Workout.id == workout_id,
+        Workout.user_id == current_user.id,
+    ).first()
     if not workout:
         raise HTTPException(status_code=404, detail="Workout not found")
     workout.status = WorkoutStatus.SKIPPED
