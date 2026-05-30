@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title }}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        * { font-family: 'Inter', sans-serif; }
+        body { background: #0f172a; color: #e2e8f0; }
+        .card { background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 1.5rem; }
+        .btn { padding: 0.5rem 1.25rem; border-radius: 8px; font-weight: 600; font-size: 0.875rem; cursor: pointer; transition: all 0.15s; border: none; }
+        .btn-primary { background: #3b82f6; color: white; }
+        .btn-primary:hover { background: #2563eb; }
+        .btn-ghost { background: transparent; color: #94a3b8; border: 1px solid #334155; }
+        .btn-ghost:hover { background: #1e293b; }
+        input, select { background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 0.6rem 0.75rem; color: #e2e8f0; width: 100%; }
+        input:focus, select:focus { outline: none; border-color: #3b82f6; }
+        [x-cloak] { display: none !important; }
+        .badge { display: inline-block; padding: 0.15rem 0.6rem; border-radius: 9999px; font-size: 0.75rem; }
+    </style>
+</head>
+<body x-data="settingsApp()" x-init="init()" class="min-h-screen"
+      data-strava-auth-url="/api/strava/auth-url">
+    <nav class="border-b border-slate-700/50 bg-slate-900/80 backdrop-blur sticky top-0 z-50">
+        <div class="max-w-6xl mx-auto px-4 h-14 flex items-center justify-between">
+            <a href="/" class="text-lg font-bold tracking-tight"><span class="text-cyan-400">&#x1F6B2;</span> CycleTrain</a>
+            <div class="flex gap-2">
+                <a href="/" class="btn btn-ghost text-xs">Dashboard</a>
+                <a href="/calendar" class="btn btn-ghost text-xs">Calendar</a>
+                <a href="/pmc" class="btn btn-ghost text-xs">PMC</a>
+            </div>
+        </div>
+    </nav>
+
+    <main class="max-w-2xl mx-auto px-4 py-6">
+        <h1 class="text-2xl font-bold mb-6">Settings</h1>
+
+        <!-- Athlete Profile -->
+        <div class="card mb-4">
+            <h2 class="text-lg font-semibold mb-4">Athlete Profile</h2>
+            <div class="space-y-4">
+                <div>
+                    <label class="block text-sm font-medium text-slate-300 mb-1">Name</label>
+                    <input type="text" x-model="user.name" placeholder="Your name">
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-sm font-medium text-slate-300 mb-1">FTP (watts)</label>
+                        <input type="number" x-model="user.ftp" placeholder="200">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-slate-300 mb-1">Weight (kg)</label>
+                        <input type="number" step="0.1" x-model="user.weight_kg" placeholder="75">
+                    </div>
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-sm font-medium text-slate-300 mb-1">Resting HR (bpm)</label>
+                        <input type="number" x-model="user.resting_hr" placeholder="60">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-slate-300 mb-1">Max HR (bpm)</label>
+                        <input type="number" x-model="user.max_hr" placeholder="185">
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-slate-300 mb-1">Training Goal / Phase</label>
+                    <select x-model="user.training_goal">
+                        <option value="base">Base (aerobic foundation)</option>
+                        <option value="build">Build (increasing intensity)</option>
+                        <option value="peak">Peak (race sharpening)</option>
+                        <option value="race">Race (maintenance & rest)</option>
+                        <option value="recovery">Recovery (active rest)</option>
+                    </select>
+                </div>
+                <button @click="saveSettings()" class="btn btn-primary" x-text="saving ? 'Saving...' : 'Save Settings'"></button>
+                <div x-show="saved" class="text-sm text-emerald-400 mt-2">Settings saved!</div>
+            </div>
+        </div>
+
+        <!-- Strava Connection -->
+        <div class="card mb-4">
+            <h2 class="text-lg font-semibold mb-4">Strava Connection</h2>
+            <div x-show="stravaConnected" class="text-sm text-emerald-400 mb-3">&#x2714; Connected to Strava</div>
+            <div x-show="!stravaConnected" class="text-sm text-slate-400 mb-3">Not connected. Connect your Strava account to import rides automatically.</div>
+            <template x-if="!stravaConnected && stravaAuthUrl">
+                <a :href="stravaAuthUrl" class="btn btn-primary inline-block">Connect Strava</a>
+            </template>
+            <template x-if="stravaConnected">
+                <div class="flex gap-2">
+                    <button @click="syncStrava()" class="btn btn-primary" :disabled="syncing" x-text="syncing ? 'Syncing...' : 'Sync Activities'"></button>
+                    <span x-show="syncResult" class="text-sm text-slate-400 py-2" x-text="syncResult"></span>
+                </div>
+            </template>
+        </div>
+
+        <!-- Manual Workout Log -->
+        <div class="card mb-4">
+            <h2 class="text-lg font-semibold mb-4">Log a Workout</h2>
+            <div class="space-y-3">
+                <div>
+                    <label class="block text-sm font-medium text-slate-300 mb-1">Title</label>
+                    <input type="text" x-model="log.title" placeholder="e.g., Evening Ride">
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-sm font-medium text-slate-300 mb-1">Date</label>
+                        <input type="date" x-model="log.date">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-slate-300 mb-1">Duration (min)</label>
+                        <input type="number" x-model="log.duration" placeholder="60">
+                    </div>
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-sm font-medium text-slate-300 mb-1">Type</label>
+                        <select x-model="log.type">
+                            <option value="endurance">Endurance</option>
+                            <option value="tempo">Tempo</option>
+                            <option value="threshold">Threshold</option>
+                            <option value="vo2max">VO2 Max</option>
+                            <option value="sprint">Sprint</option>
+                            <option value="recovery">Recovery</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-slate-300 mb-1">Distance (km)</label>
+                        <input type="number" step="0.1" x-model="log.distance" placeholder="0">
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-slate-300 mb-1">Notes</label>
+                    <input type="text" x-model="log.notes" placeholder="How did it feel?">
+                </div>
+                <button @click="logWorkout()" class="btn btn-primary" x-text="logging ? 'Logging...' : 'Log Workout'"></button>
+                <div x-show="logResult" class="text-sm text-emerald-400" x-text="logResult"></div>
+            </div>
+        </div>
+    </main>
+
+    {% raw %}
+    <script>
+        function settingsApp() {
+            return {
+                user: { name: '', ftp: 200, weight_kg: 75, resting_hr: 60, max_hr: 185, training_goal: 'base' },
+                stravaConnected: false,
+                stravaAuthUrl: document.body.dataset.stravaAuthUrl || '#',
+                saving: false,
+                saved: false,
+                syncing: false,
+                syncResult: '',
+                log: { title: '', date: '', duration: 60, type: 'endurance', distance: 0, notes: '' },
+                logging: false,
+                logResult: '',
+                async init() {
+                    try {
+                        const res = await fetch('/api/user/');
+                        if (res.ok) {
+                            const data = await res.json();
+                            this.user = {
+                                name: data.name || '',
+                                ftp: data.ftp || 200,
+                                weight_kg: data.weight_kg || 75,
+                                resting_hr: data.resting_hr || 60,
+                                max_hr: data.max_hr || 185,
+                                training_goal: data.training_goal || 'base',
+                            };
+                            this.stravaConnected = data.strava_athlete_id != null;
+                        }
+                    } catch(e) {}
+                    // Set default date
+                    this.log.date = new Date().toISOString().split('T')[0];
+                },
+                async saveSettings() {
+                    this.saving = true;
+                    try {
+                        const res = await fetch('/api/user/', {
+                            method: 'PATCH',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(this.user),
+                        });
+                        if (res.ok) {
+                            this.saved = true;
+                            setTimeout(() => this.saved = false, 3000);
+                        }
+                    } catch(e) {}
+                    this.saving = false;
+                },
+                async syncStrava() {
+                    this.syncing = true;
+                    this.syncResult = '';
+                    try {
+                        const res = await fetch('/api/strava/sync?days_back=90', { method: 'POST' });
+                        const data = await res.json();
+                        this.syncResult = 'Synced ' + data.synced + ' activities!';
+                    } catch(e) { this.syncResult = 'Sync failed'; }
+                    this.syncing = false;
+                },
+                async logWorkout() {
+                    this.logging = true;
+                    this.logResult = '';
+                    try {
+                        const res = await fetch('/api/workouts/', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                scheduled_date: this.log.date,
+                                workout_type: this.log.type,
+                                title: this.log.title || this.log.type.charAt(0).toUpperCase() + this.log.type.slice(1) + ' Ride',
+                                duration_minutes: parseInt(this.log.duration) || 60,
+                                is_manual: true,
+                                description: this.log.notes || 'Manually logged workout',
+                            }),
+                        });
+                        if (res.ok) {
+                            this.logResult = 'Workout logged!';
+                            this.log = { ...this.log, title: '', duration: 60, distance: 0, notes: '' };
+                            setTimeout(() => this.logResult = '', 3000);
+                        }
+                    } catch(e) { this.logResult = 'Failed to log'; }
+                    this.logging = false;
+                }
+            }
+        }
+    </script>
+    {% endraw %}
+</body>
+</html>

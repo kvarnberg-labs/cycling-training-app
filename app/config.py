@@ -1,0 +1,35 @@
+"""Configuration for the cycling training app."""
+
+from pydantic_settings import BaseSettings
+from typing import Optional
+
+
+class Settings(BaseSettings):
+    # App
+    app_name: str = "Cycling Training App"
+    debug: bool = True
+    secret_key: str = "change-me-in-production-use-a-real-secret"
+
+    # Database
+    database_url: str = "sqlite:///./cycling_trainer.db"
+
+    # Strava API
+    strava_client_id: str = ""
+    strava_client_secret: str = ""
+    strava_redirect_uri: str = "http://localhost:8000/auth/strava/callback"
+
+    # Base URL for the app
+    base_url: str = "http://localhost:8000"
+
+    # Training defaults
+    default_ftp: int = 200  # watts
+    default_weight: float = 75.0  # kg
+    default_hr_rest: int = 60  # bpm
+    default_hr_max: int = 185  # bpm
+
+    class Config:
+        env_file = ".env"
+        env_file_encoding = "utf-8"
+
+
+settings = Settings()

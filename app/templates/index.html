@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title }}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js"></script>
+    <script src="https://unpkg.com/htmx.org@2.0.3"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        * { font-family: 'Inter', sans-serif; }
+        body { background: #0f172a; color: #e2e8f0; }
+        .card { background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 1.5rem; }
+        .stat { font-size: 2rem; font-weight: 800; letter-spacing: -0.02em; }
+        .stat-label { font-size: 0.85rem; color: #94a3b8; font-weight: 500; }
+        .tsb-positive { color: #22d3ee; }
+        .tsb-negative { color: #f97316; }
+        .tsb-neutral { color: #a78bfa; }
+        .zone-1 { background: #1e40af; } .zone-2 { background: #2563eb; }
+        .zone-3 { background: #7c3aed; } .zone-4 { background: #9333ea; }
+        .zone-5 { background: #db2777; }
+        .btn { padding: 0.5rem 1.25rem; border-radius: 8px; font-weight: 600; font-size: 0.875rem; cursor: pointer; transition: all 0.15s; border: none; }
+        .btn-primary { background: #3b82f6; color: white; }
+        .btn-primary:hover { background: #2563eb; }
+        .btn-secondary { background: #334155; color: #e2e8f0; }
+        .btn-secondary:hover { background: #475569; }
+        .btn-success { background: #059669; color: white; }
+        .btn-success:hover { background: #047857; }
+        .btn-ghost { background: transparent; color: #94a3b8; border: 1px solid #334155; }
+        .btn-ghost:hover { background: #1e293b; }
+        .badge { display: inline-block; padding: 0.15rem 0.6rem; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; }
+        input, select { background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 0.6rem 0.75rem; color: #e2e8f0; width: 100%; }
+        input:focus, select:focus { outline: none; border-color: #3b82f6; box-shadow: 0 0 0 2px rgba(59,130,246,0.3); }
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: #1e293b; }
+        ::-webkit-scrollbar-thumb { background: #475569; border-radius: 3px; }
+        .workout-card { border-left: 4px solid transparent; }
+        .workout-card.recovery { border-color: #22d3ee; }
+        .workout-card.endurance { border-color: #3b82f6; }
+        .workout-card.tempo { border-color: #8b5cf6; }
+        .workout-card.threshold { border-color: #a855f7; }
+        .workout-card.vo2max { border-color: #db2777; }
+        .workout-card.sprint { border-color: #ef4444; }
+        .workout-card.interval { border-color: #f59e0b; }
+        @media (max-width: 640px) { .card { padding: 1rem; } .stat { font-size: 1.5rem; } }
+        [x-cloak] { display: none !important; }
+    </style>
+</head>
+<body x-data="app()" x-init="init()" class="min-h-screen"
+      data-strava-configured="{{ 'true' if strava_client_id else 'false' }}"
+      data-strava-auth-url="/api/strava/auth-url">
+    <!-- Nav -->
+    <nav class="border-b border-slate-700/50 bg-slate-900/80 backdrop-blur sticky top-0 z-50">
+        <div class="max-w-6xl mx-auto px-4 h-14 flex items-center justify-between">
+            <div class="flex items-center gap-6">
+                <a href="/" class="text-lg font-bold tracking-tight">
+                    <span class="text-cyan-400">&#x1F6B2;</span> CycleTrain
+                </a>
+                <div class="hidden sm:flex gap-1">
+                    <a href="/" class="px-3 py-1.5 rounded-lg text-sm font-medium" :class="page === 'dashboard' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'">Dashboard</a>
+                    <a href="/calendar" class="px-3 py-1.5 rounded-lg text-sm font-medium" :class="page === 'calendar' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'">Calendar</a>
+                    <a href="/pmc" class="px-3 py-1.5 rounded-lg text-sm font-medium" :class="page === 'pmc' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'">PMC</a>
+                    <a href="/settings" class="px-3 py-1.5 rounded-lg text-sm font-medium" :class="page === 'settings' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'">Settings</a>
+                </div>
+            </div>
+            <div class="flex items-center gap-3">
+                <template x-if="!stravaConnected">
+                    <a :href="stravaAuthUrl" class="btn btn-primary text-xs px-3 py-1.5">
+                        + Connect Strava
+                    </a>
+                </template>
+                <template x-if="stravaConnected">
+                    <button @click="syncStrava()" class="btn btn-secondary text-xs px-3 py-1.5" :disabled="syncing">
+                        <span x-text="syncing ? 'Syncing...' : 'Sync Strava'"></span>
+                    </button>
+                </template>
+            </div>
+            <!-- Mobile nav -->
+            <div class="sm:hidden flex gap-0.5">
+                <a href="/" class="p-2" :class="page === 'dashboard' ? 'text-cyan-400' : 'text-slate-500'">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"/></svg>
+                </a>
+                <a href="/calendar" class="p-2" :class="page === 'calendar' ? 'text-cyan-400' : 'text-slate-500'">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                </a>
+                <a href="/pmc" class="p-2" :class="page === 'pmc' ? 'text-cyan-400' : 'text-slate-500'">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
+                </a>
+                <a href="/settings" class="p-2" :class="page === 'settings' ? 'text-cyan-400' : 'text-slate-500'">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+                </a>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="max-w-6xl mx-auto px-4 py-6">
+        <!-- CTL/ATL/TSB Cards -->
+        <div class="grid grid-cols-3 gap-3 sm:gap-4 mb-6">
+            <div class="card text-center">
+                <div class="stat-label">CTL (Fitness)</div>
+                <div class="stat text-cyan-400" x-text="dashboard.ctl.toFixed(1)">--</div>
+                <div class="text-xs text-slate-500 mt-1">42-day avg</div>
+            </div>
+            <div class="card text-center">
+                <div class="stat-label">ATL (Fatigue)</div>
+                <div class="stat text-rose-400" x-text="dashboard.atl.toFixed(1)">--</div>
+                <div class="text-xs text-slate-500 mt-1">7-day avg</div>
+            </div>
+            <div class="card text-center">
+                <div class="stat-label">TSB (Form)</div>
+                <div class="stat" :class="dashboard.tsb >= 0 ? 'text-emerald-400' : 'text-orange-400'" x-text="(dashboard.tsb >= 0 ? '+' : '') + dashboard.tsb.toFixed(1)">--</div>
+                <div class="text-xs text-slate-500 mt-1">CTL &minus; ATL</div>
+            </div>
+        </div>
+
+        <!-- Main grid: Workouts + Activity -->
+        <div class="grid lg:grid-cols-3 gap-4 mb-6">
+            <!-- Suggested Workouts (takes 2 cols) -->
+            <div class="lg:col-span-2 card">
+                <div class="flex items-center justify-between mb-4">
+                    <h2 class="text-lg font-semibold">This Week&rsquo;s Workouts</h2>
+                    <button @click="generateWeek()" class="btn btn-primary text-xs" :disabled="generating">
+                        <span x-text="generating ? 'Generating...' : 'Generate Week'"></span>
+                    </button>
+                </div>
+                <div x-show="workouts.length === 0" class="text-center py-8 text-slate-500">
+                    <p class="text-lg mb-2">No workouts yet</p>
+                    <p class="text-sm">Connect Strava and sync your activities, or click &ldquo;Generate Week&rdquo; for recommendations.</p>
+                </div>
+                <div class="space-y-2">
+                    <template x-for="w in workouts" :key="w.id">
+                        <div class="workout-card" :class="w.workout_type || 'endurance'">
+                            <div class="flex items-start justify-between gap-3 p-3 bg-slate-800/50 rounded-lg">
+                                <div class="min-w-0">
+                                    <div class="flex items-center gap-2 flex-wrap">
+                                        <span class="text-sm font-semibold" x-text="w.title"></span>
+                                        <span class="badge text-xs" :class="'bg-' + (w.workout_type || 'endurance') + '/20 text-' + (w.workout_type || 'endurance') + '-300'" x-text="w.workout_type"></span>
+                                        <span class="badge bg-slate-700 text-slate-300" x-text="w.status"></span>
+                                    </div>
+                                    <div class="text-xs text-slate-400 mt-1 flex items-center gap-3">
+                                        <span x-text="formatDate(w.scheduled_date)"></span>
+                                        <span x-show="w.duration_minutes" x-text="w.duration_minutes + ' min'"></span>
+                                        <span x-show="w.target_power_zone" x-text="w.target_power_zone"></span>
+                                    </div>
+                                    <p x-show="w.description" class="text-xs text-slate-500 mt-1" x-text="w.description"></p>
+                                </div>
+                                <div class="flex gap-1 shrink-0">
+                                    <button @click="acceptWorkout(w.id)" x-show="w.status === 'suggested'" class="btn btn-success text-xs px-2 py-1">Accept</button>
+                                    <button @click="skipWorkout(w.id)" x-show="w.status === 'suggested' || w.status === 'accepted'" class="btn btn-ghost text-xs px-2 py-1">Skip</button>
+                                    <button @click="completeWorkout(w.id)" x-show="w.status === 'accepted'" class="btn btn-primary text-xs px-2 py-1">Done</button>
+                                </div>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+            </div>
+
+            <!-- Recent Activity sidebar -->
+            <div class="card">
+                <h2 class="text-lg font-semibold mb-4">Recent Rides</h2>
+                <div x-show="recentActivities.length === 0" class="text-center py-8 text-slate-500 text-sm">
+                    No activities synced yet. Connect Strava to see your rides.
+                </div>
+                <div class="space-y-2">
+                    <template x-for="a in recentActivities" :key="a.id">
+                        <div class="p-2.5 bg-slate-800/50 rounded-lg">
+                            <div class="text-sm font-medium truncate" x-text="a.name || 'Ride'"></div>
+                            <div class="text-xs text-slate-400 mt-0.5 flex items-center gap-2">
+                                <span x-text="formatDate(a.start_date)"></span>
+                                <span x-show="a.distance" x-text="(a.distance / 1000).toFixed(1) + ' km'"></span>
+                            </div>
+                            <div class="flex gap-2 mt-1 text-xs text-slate-500">
+                                <span x-show="a.average_watts" x-text="a.average_watts.toFixed(0) + ' W'"></span>
+                                <span x-show="a.training_stress_score" x-text="a.training_stress_score.toFixed(0) + ' TSS'"></span>
+                                <span x-show="a.average_heartrate" x-text="a.average_heartrate.toFixed(0) + ' bpm'"></span>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+            </div>
+        </div>
+
+        <!-- Week Stats -->
+        <div class="card">
+            <h2 class="text-lg font-semibold mb-3">Week Overview</h2>
+            <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 text-center">
+                <div>
+                    <div class="stat text-cyan-400" x-text="dashboard.this_week_tss.toFixed(0)">0</div>
+                    <div class="stat-label">TSS This Week</div>
+                </div>
+                <div>
+                    <div class="stat text-blue-400" x-text="dashboard.recent_activities_count">0</div>
+                    <div class="stat-label">Rides (7d)</div>
+                </div>
+                <div>
+                    <div class="stat text-purple-400" x-text="dashboard.ftp">0</div>
+                    <div class="stat-label">FTP (watts)</div>
+                </div>
+                <div>
+                    <div class="stat text-emerald-400 capitalize" x-text="dashboard.training_goal">-</div>
+                    <div class="stat-label">Current Phase</div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    {% raw %}
+    <script>
+        function app() {
+            return {
+                page: 'dashboard',
+                stravaConnected: false,
+                stravaAuthUrl: document.body.dataset.stravaAuthUrl || '#',
+                syncing: false,
+                generating: false,
+                dashboard: { ctl: 0, atl: 0, tsb: 0, ftp: 200, this_week_tss: 0, recent_activities_count: 0, training_goal: 'base' },
+                workouts: [],
+                recentActivities: [],
+                async init() {
+                    await this.loadDashboard();
+                },
+                async loadDashboard() {
+                    try {
+                        const res = await fetch('/api/dashboard/');
+                        if (!res.ok) return;
+                        const data = await res.json();
+                        this.dashboard = {
+                            ctl: data.current_ctl || 0,
+                            atl: data.current_atl || 0,
+                            tsb: data.current_tsb || 0,
+                            ftp: data.ftp || 200,
+                            this_week_tss: data.this_week_tss || 0,
+                            recent_activities_count: data.recent_activities_count || 0,
+                            training_goal: data.training_goal || 'base',
+                        };
+                        this.stravaConnected = data.strava_connected || false;
+                        this.workouts = (data.suggested_workouts || []).map(w => ({
+                            ...w,
+                            scheduled_date: w.scheduled_date || w.scheduled_date
+                        }));
+                    } catch(e) {}
+                    try {
+                        const res = await fetch('/api/strava/activities?limit=5');
+                        if (res.ok) this.recentActivities = await res.json();
+                    } catch(e) {}
+                },
+                async syncStrava() {
+                    this.syncing = true;
+                    try {
+                        const res = await fetch('/api/strava/sync?days_back=90', { method: 'POST' });
+                        const data = await res.json();
+                        alert('Synced ' + data.synced + ' activities!');
+                        await this.loadDashboard();
+                    } catch(e) { alert('Sync failed'); }
+                    this.syncing = false;
+                },
+                async generateWeek() {
+                    this.generating = true;
+                    try {
+                        const res = await fetch('/api/workouts/generate-week', { method: 'POST' });
+                        if (res.ok) await this.loadDashboard();
+                    } catch(e) { alert('Failed to generate'); }
+                    this.generating = false;
+                },
+                async acceptWorkout(id) {
+                    const res = await fetch('/api/workouts/' + id + '/accept', { method: 'PUT' });
+                    if (res.ok) await this.loadDashboard();
+                },
+                async skipWorkout(id) {
+                    const res = await fetch('/api/workouts/' + id + '/skip', { method: 'PUT' });
+                    if (res.ok) await this.loadDashboard();
+                },
+                async completeWorkout(id) {
+                    const res = await fetch('/api/workouts/' + id + '/complete', { method: 'PUT' });
+                    if (res.ok) await this.loadDashboard();
+                },
+                formatDate(d) {
+                    if (!d) return '';
+                    const dt = new Date(d + 'T00:00:00');
+                    return dt.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+                }
+            }
+        }
+    </script>
+    {% endraw %}
+</body>
+</html>
