@@ -128,11 +128,11 @@ WORKOUT_TYPE_PRIORITY = {
 
 # TSB (form) ranges and corresponding workout intensity adjustments
 TSB_RANGES = [
-    (-100, -20, "overreaching"),   # Very fatigued — only recovery
-    (-20, -10, "heavy"),            # Fatigued — easy endurance or recovery
-    (-10, 5, "optimal"),           # Good form — can train hard
-    (5, 15, "fresh"),              # Fresh — great for intensity
-    (15, 100, "peaking"),          # Very fresh — race ready, don't overdo it
+    (-100, -19, "overreaching"),   # Very fatigued — only recovery
+    (-19, -9, "heavy"),             # Fatigued — easy endurance or recovery
+    (-9, 6, "optimal"),            # Good form — can train hard
+    (6, 16, "fresh"),              # Fresh — great for intensity
+    (16, float("inf"), "peaking"), # Very fresh — race ready, don't overdo it
 ]
 
 
