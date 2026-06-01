@@ -81,6 +81,35 @@
             </div>
         </div>
 
+        <!-- Weather Settings -->
+        <div class="card mb-4">
+            <h2 class="text-lg font-semibold mb-4">Weather &amp; Location</h2>
+            <div class="space-y-4">
+                <p class="text-xs text-slate-400">Set your location for accurate weather-based workout recommendations. Uses the free SMHI API (excellent Nordic coverage).</p>
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-sm font-medium text-slate-300 mb-1">Latitude</label>
+                        <input type="number" step="0.01" x-model="user.location_lat" placeholder="e.g. 59.33 (Stockholm)">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-slate-300 mb-1">Longitude</label>
+                        <input type="number" step="0.01" x-model="user.location_lon" placeholder="e.g. 18.07 (Stockholm)">
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-slate-300 mb-1">Training Preference</label>
+                    <select x-model="user.weather_preference">
+                        <option value="auto">Auto (weather-dependent)</option>
+                        <option value="indoor">Always indoor (Zwift/trainer)</option>
+                        <option value="outdoor">Always outdoor (ride in all conditions)</option>
+                    </select>
+                    <p class="text-xs text-slate-500 mt-1">Weather-based recommendations adjust based on this preference.</p>
+                </div>
+                <button @click="saveSettings()" class="btn btn-primary" x-text="saving ? 'Saving...' : 'Save Settings'"></button>
+                <div x-show="saved" class="text-sm text-emerald-400 mt-2">Settings saved!</div>
+            </div>
+        </div>
+
         <!-- Strava Connection -->
         <div class="card mb-4">
             <h2 class="text-lg font-semibold mb-4">Strava Connection</h2>
@@ -146,7 +175,7 @@
     <script>
         function settingsApp() {
             return {
-                user: { name: '', ftp: 200, weight_kg: 75, resting_hr: 60, max_hr: 185, training_goal: 'base' },
+                user: { name: '', ftp: 200, weight_kg: 75, resting_hr: 60, max_hr: 185, training_goal: 'base', location_lat: null, location_lon: null, weather_preference: 'auto' },
                 stravaConnected: false,
                 stravaAuthUrl: document.body.dataset.stravaAuthUrl || '#',
                 saving: false,
@@ -168,6 +197,9 @@
                                 resting_hr: data.resting_hr || 60,
                                 max_hr: data.max_hr || 185,
                                 training_goal: data.training_goal || 'base',
+                                location_lat: data.location_lat || null,
+                                location_lon: data.location_lon || null,
+                                weather_preference: data.weather_preference || 'auto',
                             };
                             this.stravaConnected = data.strava_athlete_id != null;
                         }

@@ -167,7 +167,7 @@ def get_pmc(
 
 
 @router.get("/calendar", response_model=WeeklyCalendarResponse)
-def get_weekly_calendar(
+async def get_weekly_calendar(
     week_start: Optional[date] = Query(default=None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -193,6 +193,29 @@ def get_weekly_calendar(
     day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
     days = []
 
+    # Fetch weather data if user has location
+    weather_map = {}
+    if current_user.location_lat and current_user.location_lon:
+        try:
+            from app.services.weather import get_forecast
+            forecasts = await get_forecast(
+                current_user.location_lat, current_user.location_lon
+            )
+            for f in forecasts:
+                weather_map[f.date] = {
+                    "icon": f.icon,
+                    "label": f.label,
+                    "symbol": f.symbol,
+                    "temp_min": f.temp_min,
+                    "temp_max": f.temp_max,
+                    "precipitation_mm": f.precipitation_mm,
+                    "wind_speed_ms": f.wind_speed_ms,
+                    "indoor_suitable": f.is_indoor_suitable,
+                    "outdoor_suitable": f.is_outdoor_suitable,
+                }
+        except Exception as e:
+            pass  # Weather is optional
+
     for i in range(7):
         day_date = week_start + timedelta(days=i)
         day_workouts = [w for w in workouts if w.scheduled_date == day_date]
@@ -205,6 +228,7 @@ def get_weekly_calendar(
             workouts=day_workouts,
             total_tss=total_tss,
             total_duration_minutes=total_duration,
+            weather=weather_map.get(day_date),
         ))
 
     return WeeklyCalendarResponse(

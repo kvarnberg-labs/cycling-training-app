@@ -1,7 +1,7 @@
 """Pydantic schemas for the cycling training app."""
 
 from datetime import datetime, date
-from typing import Optional, List
+from typing import Optional, List, Dict
 from pydantic import BaseModel, Field, EmailStr
 
 
@@ -23,6 +23,9 @@ class UserUpdate(BaseModel):
     resting_hr: Optional[int] = None
     max_hr: Optional[int] = None
     training_goal: Optional[str] = None
+    location_lat: Optional[float] = None
+    location_lon: Optional[float] = None
+    weather_preference: Optional[str] = None
 
 
 class UserOut(BaseModel):
@@ -37,6 +40,9 @@ class UserOut(BaseModel):
     strava_athlete_id: Optional[int] = None
     is_active: bool
     created_at: datetime
+    location_lat: Optional[float] = None
+    location_lon: Optional[float] = None
+    weather_preference: str = "auto"
 
     class Config:
         from_attributes = True
@@ -108,6 +114,7 @@ class WorkoutOut(BaseModel):
     target_rpe: Optional[int] = None
     status: str
     is_manual: bool
+    is_indoor: bool = False
     source: str
     actual_duration_minutes: Optional[int] = None
     actual_distance_km: Optional[float] = None
@@ -167,6 +174,7 @@ class WeeklyCalendarDay(BaseModel):
     workouts: List[WorkoutOut]
     total_tss: float = 0
     total_duration_minutes: float = 0
+    weather: Optional[Dict] = None  # Weather info for this day
 
 
 class WeeklyCalendarResponse(BaseModel):
@@ -206,3 +214,35 @@ class TokenResponse(BaseModel):
     refresh_token: str
     token_type: str = "bearer"
     user: Optional[UserOut] = None
+
+
+# ── Weather ──
+
+class UserWeatherSettings(BaseModel):
+    """User preferences for weather-aware training."""
+    location_lat: Optional[float] = None
+    location_lon: Optional[float] = None
+    weather_preference: str = "auto"
+
+
+class WeatherDayOut(BaseModel):
+    """Weather forecast for a single day."""
+    date: str
+    symbol: str
+    icon: str
+    label: str
+    temp_min: float
+    temp_max: float
+    precipitation_mm: float
+    wind_speed_ms: float
+    indoor_suitable: bool
+    outdoor_suitable: bool
+    suggestion: str
+    suggestion_reason: str
+
+
+class WeatherForecastResponse(BaseModel):
+    """Weather forecast response."""
+    location_lat: float
+    location_lon: float
+    days: List[WeatherDayOut]

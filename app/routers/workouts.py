@@ -12,6 +12,9 @@ from app.models import User, Workout, WorkoutStatus
 from app.schemas import WorkoutCreate, WorkoutOut, WorkoutUpdate
 from app.auth import get_current_user
 from app.services.recommendation_engine import generate_weekly_plan
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/workouts", tags=["workouts"])
 
@@ -124,7 +127,7 @@ def delete_workout(
 
 
 @router.post("/generate-week", response_model=List[WorkoutOut])
-def generate_week(
+async def generate_week(
     week_start: date = Query(default=None, description="Monday of the target week"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -173,6 +176,28 @@ def generate_week(
     )
 
     # Generate recommendations
+    # Fetch weather if user has a location set
+    weather_forecasts = None
+    if current_user.location_lat and current_user.location_lon:
+        try:
+            from app.services.weather import get_forecast
+            forecasts = await get_forecast(
+                current_user.location_lat, current_user.location_lon
+            )
+            if forecasts:
+                weather_forecasts = {
+                    f.date: {
+                        "symbol": f.symbol,
+                        "icon": f.icon,
+                        "label": f.label,
+                        "indoor": f.is_indoor_suitable,
+                        "outdoor": f.is_outdoor_suitable,
+                    }
+                    for f in forecasts
+                }
+        except Exception as e:
+            logger.warning(f"Could not fetch weather for recommendations: {e}")
+
     recommendations = generate_weekly_plan(
         user_id=current_user.id,
         ctl=ctl,
@@ -183,6 +208,7 @@ def generate_week(
         recent_workouts=recent_workouts,
         existing_scheduled=existing,
         week_start=week_start,
+        weather_forecasts=weather_forecasts,
     )
 
     # Save to DB
