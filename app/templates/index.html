@@ -139,6 +139,8 @@
                                         <span class="text-sm font-semibold" x-text="w.title"></span>
                                         <span class="badge text-xs" :class="'bg-' + (w.workout_type || 'endurance') + '/20 text-' + (w.workout_type || 'endurance') + '-300'" x-text="w.workout_type"></span>
                                         <span class="badge bg-slate-700 text-slate-300" x-text="w.status"></span>
+                                        <span x-show="w.is_indoor" class="badge bg-yellow-900/40 text-yellow-300 text-[10px]" title="Indoor workout recommended">🏠 Indoor</span>
+                                        <span x-show="w.is_indoor === false && w.workout_type" class="badge bg-emerald-900/40 text-emerald-300 text-[10px]" title="Outdoor ride">🌳 Outdoor</span>
                                     </div>
                                     <div class="text-xs text-slate-400 mt-1 flex items-center gap-3">
                                         <span x-text="formatDate(w.scheduled_date)"></span>

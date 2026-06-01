@@ -276,6 +276,7 @@ def generate_weekly_plan(
     recent_workouts: List[WorkoutOut],
     existing_scheduled: List[WorkoutOut],
     week_start: date,
+    weather_forecasts: Optional[Dict[date, Dict]] = None,
 ) -> List[Dict]:
     """Generate a week of workout recommendations.
 
@@ -289,6 +290,7 @@ def generate_weekly_plan(
         recent_workouts: Recently completed workouts (for variety analysis)
         existing_scheduled: Already scheduled workouts for this week
         week_start: Monday of the target week
+        weather_forecasts: Optional dict of {date: {symbol, ...}} for weather-aware recommendations
 
     Returns:
         List of workout dicts to recommend
@@ -357,6 +359,43 @@ def generate_weekly_plan(
 
         suggestions = [w for k, v in WORKOUT_LIBRARY.items() for w in v]
 
+        # ── Weather-aware adjustments ──
+        is_indoor = False
+        day_weather = (weather_forecasts or {}).get(day)
+        if day_weather:
+            symbol = day_weather.get("symbol", "")
+            from app.services.weather import get_weather_recommendation
+            rec = get_weather_recommendation(symbol)
+            is_indoor = rec["indoor"]
+
+            if is_indoor:
+                # Bad weather — adjust workout to be indoor/Zwift-friendly
+                if workout["workout_type"] in ("endurance",) and w_type in ("endurance",):
+                    # Make it Zwift-friendly: shorter duration, indoor-focused description
+                    workout["duration_minutes"] = min(workout["duration_minutes"], 90)
+                    workout["title"] = workout["title"].replace("Ride", "Zwift Ride")
+                    workout["description"] = (
+                        f"Indoor Zwift session. {rec['reason']}. "
+                        f"{workout['description']}"
+                    )
+                else:
+                    workout["description"] = (
+                        f"Indoor workout recommended. {rec['reason']}. "
+                        f"{workout['description']}"
+                    )
+                    # Shorter durations for bad weather
+                    workout["duration_minutes"] = max(
+                        int(workout["duration_minutes"] * 0.85),
+                        30
+                    )
+            else:
+                # Good weather — outdoor ride
+                if workout["workout_type"] in ("endurance", "tempo"):
+                    workout["description"] = (
+                        f"Outdoor ride. {rec['reason']}. "
+                        f"{workout['description']}"
+                    )
+
         recommendations.append({
             "user_id": user_id,
             "scheduled_date": day,
@@ -368,6 +407,7 @@ def generate_weekly_plan(
             "target_rpe": workout.get("target_rpe"),
             "status": "suggested",
             "source": "recommendation",
+            "is_indoor": is_indoor,
         })
 
         # Track what we've scheduled

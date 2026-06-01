@@ -57,6 +57,11 @@ class User(Base):
     training_goal = Column(SAEnum(TrainingGoal), default=TrainingGoal.BASE)
     is_active = Column(Boolean, default=True)
 
+    # Weather-aware training settings
+    location_lat = Column(Float, nullable=True)  # Latitude for weather forecast
+    location_lon = Column(Float, nullable=True)  # Longitude for weather forecast
+    weather_preference = Column(String(20), default="auto")  # "auto", "indoor", "outdoor"
+
     # Relationships
     strava_activities = relationship("StravaActivity", back_populates="user", cascade="all, delete-orphan")
     workouts = relationship("Workout", back_populates="user", cascade="all, delete-orphan")
@@ -129,6 +134,9 @@ class Workout(Base):
     target_power_zone = Column(String(50), nullable=True)  # e.g. "Zone 2", "Sweet Spot"
     target_hr_zone = Column(String(50), nullable=True)
     target_rpe = Column(Integer, nullable=True)
+
+    # Weather context
+    is_indoor = Column(Boolean, default=False)  # True if weather forced indoor workout
 
     # Status tracking
     status = Column(SAEnum(WorkoutStatus), default=WorkoutStatus.SUGGESTED)
