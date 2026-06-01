@@ -97,8 +97,32 @@
 
     <!-- Main Content -->
     <main class="max-w-6xl mx-auto px-4 py-6">
-        <!-- CTL/ATL/TSB Cards -->
-        <div class="grid grid-cols-3 gap-3 sm:gap-4 mb-6">
+        <!-- Readiness + CTL/ATL/TSB Cards -->
+        <div class="grid grid-cols-4 gap-3 sm:gap-4 mb-6">
+            <!-- Readiness Gauge -->
+            <div class="card text-center relative">
+                <div class="stat-label">Readiness</div>
+                <div class="mt-2 mb-1 flex justify-center">
+                    <div class="relative w-20 h-20 sm:w-24 sm:h-24">
+                        <svg class="w-full h-full -rotate-90" viewBox="0 0 100 100">
+                            <!-- Background circle -->
+                            <circle cx="50" cy="50" r="42" fill="none" stroke="#1e293b" stroke-width="8"/>
+                            <!-- Score circle -->
+                            <circle cx="50" cy="50" r="42" fill="none"
+                                :stroke="readinessColor"
+                                stroke-width="8" stroke-linecap="round"
+                                :stroke-dasharray="readinessDasharray"
+                                stroke-dashoffset="0"
+                                class="transition-all duration-700"/>
+                        </svg>
+                        <div class="absolute inset-0 flex items-center justify-center">
+                            <span class="text-xl sm:text-2xl font-bold" :style="{ color: readinessColor }" x-text="readiness.score.toFixed(0)"></span>
+                        </div>
+                    </div>
+                </div>
+                <div class="text-xs font-medium mt-1" :style="{ color: readinessColor }" x-text="readiness.zoneLabel"></div>
+                <button @click="openCheckin = true" class="btn btn-ghost text-xs mt-2 px-2 py-1 w-full">+ Check-in</button>
+            </div>
             <div class="card text-center">
                 <div class="stat-label">CTL (Fitness)</div>
                 <div class="stat text-cyan-400" x-text="dashboard.ctl.toFixed(1)">--</div>
@@ -209,6 +233,82 @@
         </div>
     </main>
 
+    <!-- Check-in Modal -->
+    <div x-show="openCheckin" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" @keydown.escape.window="openCheckin = false">
+        <div class="card w-full max-w-md mx-4" @click.outside="openCheckin = false">
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-lg font-semibold">Daily Check-in</h2>
+                <button @click="openCheckin = false" class="text-slate-500 hover:text-white text-xl leading-none">&times;</button>
+            </div>
+            <p class="text-xs text-slate-400 mb-4">How are you feeling today? Your responses help compute your readiness score.</p>
+            <div class="space-y-4">
+                <!-- Subjective Feeling -->
+                <div>
+                    <label class="block text-sm font-medium text-slate-300 mb-2">How do you feel? <span class="text-slate-500 text-xs">(1 = exhausted, 10 = amazing)</span></label>
+                    <div class="flex gap-1">
+                        <template x-for="i in 10" :key="i">
+                            <button @click="checkin.feeling = i"
+                                class="w-8 h-8 sm:w-9 sm:h-9 rounded-full text-xs font-medium transition-all"
+                                :class="checkin.feeling === i ? 'bg-cyan-500 text-white scale-110' : 'bg-slate-700 text-slate-400 hover:bg-slate-600'"
+                                x-text="i"></button>
+                        </template>
+                    </div>
+                </div>
+
+                <!-- Sleep Hours -->
+                <div>
+                    <label class="block text-sm font-medium text-slate-300 mb-1">Sleep hours</label>
+                    <input type="number" step="0.5" min="0" max="15" x-model="checkin.sleep_hours" placeholder="e.g. 7.5">
+                </div>
+
+                <!-- Sleep Quality -->
+                <div>
+                    <label class="block text-sm font-medium text-slate-300 mb-2">Sleep quality <span class="text-slate-500 text-xs">(1 = poor, 5 = great)</span></label>
+                    <div class="flex gap-1">
+                        <template x-for="i in 5" :key="i">
+                            <button @click="checkin.sleep_quality = i"
+                                class="w-10 h-8 rounded-lg text-xs font-medium transition-all"
+                                :class="checkin.sleep_quality === i ? 'bg-indigo-500 text-white' : 'bg-slate-700 text-slate-400 hover:bg-slate-600'"
+                                x-text="i"></button>
+                        </template>
+                    </div>
+                </div>
+
+                <!-- HRV (optional) -->
+                <div>
+                    <label class="block text-sm font-medium text-slate-300 mb-1">HRV RMSSD (ms) <span class="text-slate-500 text-xs">optional</span></label>
+                    <input type="number" step="1" min="0" max="200" x-model="checkin.hrv_rmssd" placeholder="e.g. 55">
+                </div>
+
+                <!-- Resting HR (optional) -->
+                <div>
+                    <label class="block text-sm font-medium text-slate-300 mb-1">Resting HR (bpm) <span class="text-slate-500 text-xs">optional</span></label>
+                    <input type="number" step="1" min="30" max="120" x-model="checkin.resting_hr" placeholder="e.g. 48">
+                </div>
+
+                <!-- Soreness -->
+                <div>
+                    <label class="block text-sm font-medium text-slate-300 mb-2">Muscle soreness <span class="text-slate-500 text-xs">(1 = none, 5 = very sore)</span></label>
+                    <div class="flex gap-1">
+                        <template x-for="i in 5" :key="i">
+                            <button @click="checkin.soreness = i"
+                                class="w-10 h-8 rounded-lg text-xs font-medium transition-all"
+                                :class="checkin.soreness === i ? 'bg-rose-500 text-white' : 'bg-slate-700 text-slate-400 hover:bg-slate-600'"
+                                x-text="i"></button>
+                        </template>
+                    </div>
+                </div>
+
+                <div class="flex gap-2 pt-2">
+                    <button @click="submitCheckin()" class="btn btn-primary flex-1" :disabled="checkinSaving">
+                        <span x-text="checkinSaving ? 'Saving...' : 'Log Check-in'"></span>
+                    </button>
+                    <button @click="openCheckin = false" class="btn btn-ghost">Cancel</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     {% raw %}
     <script>
         function app() {
@@ -218,9 +318,24 @@
                 stravaAuthUrl: document.body.dataset.stravaAuthUrl || '#',
                 syncing: false,
                 generating: false,
+                openCheckin: false,
+                checkinSaving: false,
+                checkin: { feeling: null, sleep_hours: null, sleep_quality: null, hrv_rmssd: null, resting_hr: null, soreness: null },
+                readiness: { score: 50, zone: 'yellow', zoneLabel: 'Moderate', todayLogged: false, streak: 0 },
                 dashboard: { ctl: 0, atl: 0, tsb: 0, ftp: 200, this_week_tss: 0, recent_activities_count: 0, training_goal: 'base' },
                 workouts: [],
                 recentActivities: [],
+
+                get readinessColor() {
+                    const s = this.readiness.score;
+                    if (s >= 67) return '#22d3ee';
+                    if (s >= 34) return '#eab308';
+                    return '#ef4444';
+                },
+                get readinessDasharray() {
+                    const circumference = 2 * Math.PI * 42;
+                    return (this.readiness.score / 100) * circumference + ' ' + circumference;
+                },
 
                 getHeaders() {
                     const h = { 'Content-Type': 'application/json' };
@@ -231,6 +346,7 @@
 
                 async init() {
                     await this.loadDashboard();
+                    await this.loadReadiness();
                 },
                 async loadDashboard() {
                     const headers = this.getHeaders();
@@ -325,6 +441,44 @@
                     if (!d) return '';
                     const dt = new Date(d + 'T00:00:00');
                     return dt.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+                },
+                async loadReadiness() {
+                    try {
+                        const res = await fetch('/api/recovery/readiness', { headers: this.getHeaders() });
+                        if (res.ok) {
+                            const data = await res.json();
+                            this.readiness = {
+                                score: data.readiness_score || 50,
+                                zone: data.readiness_zone || 'yellow',
+                                zoneLabel: data.readiness_zone === 'red' ? 'Low' : data.readiness_zone === 'green' ? 'High' : 'Moderate',
+                                todayLogged: data.today_logged || false,
+                                streak: data.streak_days || 0,
+                            };
+                        }
+                    } catch(e) {}
+                },
+                async submitCheckin() {
+                    this.checkinSaving = true;
+                    try {
+                        const body = {};
+                        if (this.checkin.feeling !== null) body.subjective_feeling = this.checkin.feeling;
+                        if (this.checkin.sleep_hours !== null) body.sleep_hours = this.checkin.sleep_hours;
+                        if (this.checkin.sleep_quality !== null) body.sleep_quality = this.checkin.sleep_quality;
+                        if (this.checkin.hrv_rmssd !== null) body.hrv_rmssd = this.checkin.hrv_rmssd;
+                        if (this.checkin.resting_hr !== null) body.resting_hr = this.checkin.resting_hr;
+                        if (this.checkin.soreness !== null) body.soreness = this.checkin.soreness;
+                        const res = await fetch('/api/recovery/log', {
+                            method: 'POST',
+                            headers: this.getHeaders(),
+                            body: JSON.stringify(body),
+                        });
+                        if (res.ok) {
+                            await this.loadReadiness();
+                            this.openCheckin = false;
+                            this.checkin = { feeling: null, sleep_hours: null, sleep_quality: null, hrv_rmssd: null, resting_hr: null, soreness: null };
+                        }
+                    } catch(e) {}
+                    this.checkinSaving = false;
                 }
             }
         }

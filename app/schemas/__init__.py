@@ -246,3 +246,46 @@ class WeatherForecastResponse(BaseModel):
     location_lat: float
     location_lon: float
     days: List[WeatherDayOut]
+
+
+# ── Recovery / Readiness ──
+
+class RecoveryLogCreate(BaseModel):
+    """Daily recovery check-in."""
+    date: Optional[date] = None  # Defaults to today
+    hrv_rmssd: Optional[float] = None
+    sleep_hours: Optional[float] = None
+    sleep_quality: Optional[int] = Field(None, ge=1, le=5)
+    subjective_feeling: Optional[int] = Field(None, ge=1, le=10)
+    soreness: Optional[int] = Field(None, ge=1, le=5)
+    resting_hr: Optional[int] = None
+    notes: Optional[str] = None
+
+
+class RecoveryScoreOut(BaseModel):
+    """Recovery score for a single day."""
+    id: int
+    date: date
+    hrv_rmssd: Optional[float] = None
+    sleep_hours: Optional[float] = None
+    sleep_quality: Optional[int] = None
+    subjective_feeling: Optional[int] = None
+    soreness: Optional[int] = None
+    readiness_score: float = 0
+    readiness_zone: str = "yellow"
+    resting_hr: Optional[int] = None
+    notes: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+class ReadinessResponse(BaseModel):
+    """Current readiness status with components."""
+    readiness_score: float = 0
+    readiness_zone: str = "yellow"
+    components: Dict[str, float] = {}
+    today_logged: bool = False
+    streak_days: int = 0
+    suggestion: str = ""

@@ -66,6 +66,7 @@ class User(Base):
     strava_activities = relationship("StravaActivity", back_populates="user", cascade="all, delete-orphan")
     workouts = relationship("Workout", back_populates="user", cascade="all, delete-orphan")
     training_metrics = relationship("TrainingMetrics", back_populates="user", cascade="all, delete-orphan")
+    recovery_scores = relationship("RecoveryScore", back_populates="user", cascade="all, delete-orphan")
 
 
 class StravaActivity(Base):
@@ -180,3 +181,42 @@ class TrainingMetrics(Base):
 
     # Relationships
     user = relationship("User", back_populates="training_metrics")
+
+
+class RecoveryScore(Base):
+    """Daily recovery readiness score — HRV, sleep, subjective readiness."""
+    __tablename__ = "recovery_scores"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    date = Column(Date, nullable=False, index=True)
+
+    # HRV data
+    hrv_rmssd = Column(Float, nullable=True)  # Heart Rate Variability (RMSSD in ms)
+    hrv_trend = Column(Float, nullable=True)   # 7-day HRV trend (positive = improving)
+
+    # Sleep data
+    sleep_hours = Column(Float, nullable=True)       # Hours of sleep
+    sleep_quality = Column(Integer, nullable=True)    # 1-5 self-reported quality
+
+    # Subjective
+    subjective_feeling = Column(Integer, nullable=True)  # 1-10 (1 = exhausted, 10 = amazing)
+    soreness = Column(Integer, nullable=True)            # 1-5 muscle soreness (1 = none, 5 = very sore)
+
+    # Computed score
+    readiness_score = Column(Float, nullable=True)  # 0-100 composite readiness score
+    readiness_zone = Column(String(20), nullable=True)  # "red", "yellow", "green"
+
+    # Daily optional extras
+    resting_hr = Column(Integer, nullable=True)    # Morning resting heart rate
+    notes = Column(Text, nullable=True)
+
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    user = relationship("User", back_populates="recovery_scores")
+
+    class Config:
+        from_attributes = True

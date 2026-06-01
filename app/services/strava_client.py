@@ -1,150 +1,20 @@
-"""Strava API v3 client for fetching athlete activities."""
+"""Strava activity conversion helpers.
 
-from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+Contains data processing functions that convert raw activity data (from
+MCP tools or REST API) into the internal StravaActivity model.
+
+This module NO LONGER contains a REST API client — all Strava API
+interaction now goes through the MCP client (strava_mcp_client.py).
+"""
+
+from datetime import datetime
+from typing import Any, Dict, Optional
 import json
 import logging
 
-import httpx
-
-from app.config import settings
-from app.models import StravaActivity, WorkoutType, TrainingGoal
+from app.models import StravaActivity, WorkoutType
 
 logger = logging.getLogger(__name__)
-
-STRAVA_API_BASE = "https://www.strava.com/api/v3"
-STRAVA_AUTH_BASE = "https://www.strava.com/oauth"
-
-
-class StravaClient:
-    """Client for the Strava v3 REST API."""
-
-    def __init__(self, access_token: str):
-        self.access_token = access_token
-        self.client = httpx.Client(
-            base_url=STRAVA_API_BASE,
-            headers={"Authorization": f"Bearer {access_token}"},
-            timeout=30.0,
-        )
-
-    def refresh_token(self, refresh_token: str) -> Optional[Dict[str, Any]]:
-        """Refresh the Strava access token.
-
-        Args:
-            refresh_token: The Strava refresh token
-
-        Returns:
-            Dict with new tokens if successful, None otherwise
-        """
-        try:
-            resp = httpx.post(
-                f"{STRAVA_AUTH_BASE}/token",
-                data={
-                    "client_id": settings.strava_client_id,
-                    "client_secret": settings.strava_client_secret,
-                    "grant_type": "refresh_token",
-                    "refresh_token": refresh_token,
-                },
-                timeout=30.0,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            # Update our internal client
-            self.access_token = data["access_token"]
-            self.client.headers["Authorization"] = f"Bearer {self.access_token}"
-            return data
-        except Exception as e:
-            logger.error(f"Failed to refresh Strava token: {e}")
-            return None
-
-    def get_athlete(self) -> Optional[Dict[str, Any]]:
-        """Get the authenticated athlete's profile.
-
-        Returns:
-            Athlete info dict or None on failure.
-        """
-        try:
-            resp = self.client.get("/athlete")
-            resp.raise_for_status()
-            return resp.json()
-        except Exception as e:
-            logger.error(f"Failed to get athlete: {e}")
-            return None
-
-    def get_activities(
-        self,
-        page: int = 1,
-        per_page: int = 30,
-        after: Optional[datetime] = None,
-        before: Optional[datetime] = None,
-    ) -> List[Dict[str, Any]]:
-        """Fetch the athlete's activities.
-
-        Args:
-            page: Page number (1-indexed)
-            per_page: Activities per page (max 200)
-            after: Only activities after this timestamp
-            before: Only activities before this timestamp
-
-        Returns:
-            List of activity dicts
-        """
-        params: Dict[str, Any] = {
-            "page": page,
-            "per_page": min(per_page, 200),
-        }
-        if after:
-            params["after"] = int(after.timestamp())
-        if before:
-            params["before"] = int(before.timestamp())
-
-        try:
-            resp = self.client.get("/athlete/activities", params=params)
-            resp.raise_for_status()
-            return resp.json()
-        except Exception as e:
-            logger.error(f"Failed to fetch activities (page {page}): {e}")
-            return []
-
-    def get_activity_by_id(self, activity_id: int) -> Optional[Dict[str, Any]]:
-        """Get detailed information about a single activity (includes streams).
-
-        Args:
-            activity_id: Strava activity ID
-
-        Returns:
-            Activity detail dict or None
-        """
-        try:
-            resp = self.client.get(f"/activities/{activity_id}", params={"include_all_efforts": True})
-            resp.raise_for_status()
-            return resp.json()
-        except Exception as e:
-            logger.error(f"Failed to get activity {activity_id}: {e}")
-            return None
-
-    def get_activity_streams(
-        self, activity_id: int, keys: str = "time,distance,heartrate,watts,cadence,velocity_smooth,altitude"
-    ) -> Optional[Dict[str, Any]]:
-        """Get activity streams (time-series data).
-
-        Args:
-            activity_id: Strava activity ID
-            keys: Comma-separated stream types
-
-        Returns:
-            Stream data dict or None
-        """
-        try:
-            resp = self.client.get(
-                f"/activities/{activity_id}/streams",
-                params={"keys": keys, "key_by_type": "true"},
-            )
-            resp.raise_for_status()
-            return resp.json()
-        except Exception as e:
-            logger.error(f"Failed to get streams for {activity_id}: {e}")
-            return None
 
 
 def compute_tss_from_activity(
@@ -154,7 +24,7 @@ def compute_tss_from_activity(
     """Compute training load metrics from a Strava activity dict.
 
     Args:
-        activity_data: Raw activity data from Strava API
+        activity_data: Raw activity data from Strava API/MCP
         ftp: User's FTP
 
     Returns:
@@ -195,7 +65,7 @@ def compute_tss_from_activity(
         intensity_factor = (avg_hr - s.default_hr_rest) / (s.default_hr_max - s.default_hr_rest) * 1.0
         workout_type = classify_workout_type(ftp * intensity_factor, ftp, avg_hr, max_hr, None)
 
-    training_load = tss  # Use TSS as the primary load metric
+    training_load = tss
     tss = round(tss, 1) if tss else 0.0
 
     return tss, np, round(intensity_factor, 3) if intensity_factor else 0.0, workout_type, training_load
@@ -206,11 +76,11 @@ def strava_activity_to_model(
     activity_data: Dict[str, Any],
     ftp: int,
 ) -> StravaActivity:
-    """Convert a Strava API activity dict to a SQLAlchemy model instance.
+    """Convert a Strava activity dict to a SQLAlchemy model instance.
 
     Args:
         user_id: Internal user ID
-        activity_data: Activity dict from Strava API
+        activity_data: Activity dict (from MCP tools or REST API)
         ftp: User's FTP
 
     Returns:
@@ -234,7 +104,7 @@ def strava_activity_to_model(
 
     return StravaActivity(
         user_id=user_id,
-        strava_id=activity_data["id"],
+        strava_id=activity_data.get("id") or activity_data.get("strava_id", 0),
         name=activity_data.get("name"),
         activity_type=activity_data.get("type", "Ride"),
         start_date=start_date,
@@ -257,46 +127,3 @@ def strava_activity_to_model(
         training_stress_score=tss,
         raw_data=json.dumps(activity_data, default=str),
     )
-
-
-def get_strava_oauth_url() -> str:
-    """Generate the Strava OAuth authorization URL.
-
-    Returns:
-        Full authorization URL string
-    """
-    params = (
-        f"client_id={settings.strava_client_id}"
-        f"&redirect_uri={settings.strava_redirect_uri}"
-        f"&response_type=code"
-        f"&approval_prompt=auto"
-        f"&scope=read,activity:read_all,profile:read_all"
-    )
-    return f"{STRAVA_AUTH_BASE}/authorize?{params}"
-
-
-def exchange_authorization_code(code: str) -> Optional[Dict[str, Any]]:
-    """Exchange an OAuth authorization code for tokens.
-
-    Args:
-        code: The authorization code from Strava redirect
-
-    Returns:
-        Dict with tokens and athlete info, or None on failure
-    """
-    try:
-        resp = httpx.post(
-            f"{STRAVA_AUTH_BASE}/token",
-            data={
-                "client_id": settings.strava_client_id,
-                "client_secret": settings.strava_client_secret,
-                "code": code,
-                "grant_type": "authorization_code",
-            },
-            timeout=30.0,
-        )
-        resp.raise_for_status()
-        return resp.json()
-    except Exception as e:
-        logger.error(f"Failed to exchange auth code: {e}")
-        return None

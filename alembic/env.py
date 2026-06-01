@@ -11,7 +11,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from app.database import Base
-from app.models import User, StravaActivity, Workout, TrainingMetrics  # noqa: F401 — ensures models are loaded
+from app.models import User, StravaActivity, Workout, TrainingMetrics, RecoveryScore  # noqa: F401 — ensures models are loaded
 
 # Alembic Config object
 config = context.config
