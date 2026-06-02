@@ -141,11 +141,18 @@ def get_power_curve(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Placeholder for power duration curve data (best efforts)."""
-    return {
-        "note": (
-            "Power duration curve data — coming soon when more power data "
-            "is available"
-        ),
-        "best_efforts": [],
-    }
+    """Get the athlete's power-duration curve from Strava activities."""
+    from app.services.power_curve import compute_power_curve, get_power_curve_trend
+    ftp = current_user.ftp or 200
+    curve = compute_power_curve(
+        db=db,
+        user_id=current_user.id,
+        ftp=ftp,
+        days_back=365,
+    )
+    trend = get_power_curve_trend(
+        db=db,
+        user_id=current_user.id,
+        ftp=ftp,
+    )
+    return {**curve, "trend": trend}

@@ -20,6 +20,7 @@ from app.schemas import (
 )
 from app.auth import get_current_user, optional_current_user
 from app.services.training_load import pmc_series
+from app.services.power_curve import compute_power_curve, get_power_curve_trend
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
@@ -256,3 +257,24 @@ def get_metrics(
         .all()
     )
     return metrics
+
+
+@router.get("/power-curve")
+def get_power_curve(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Get the athlete's power-duration curve from Strava activities."""
+    ftp = current_user.ftp or 200
+    curve = compute_power_curve(
+        db=db,
+        user_id=current_user.id,
+        ftp=ftp,
+        days_back=365,
+    )
+    trend = get_power_curve_trend(
+        db=db,
+        user_id=current_user.id,
+        ftp=ftp,
+    )
+    return {**curve, "trend": trend}

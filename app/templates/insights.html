@@ -72,6 +72,44 @@
             <h2 class="text-lg font-semibold mb-3">Training Load Progression (CTL)</h2>
             <canvas id="ctlChart"></canvas>
         </div>
+
+        <!-- Power Curve -->
+        <div class="card mt-4">
+            <div class="flex items-center justify-between mb-3">
+                <h2 class="text-lg font-semibold">Power Curve</h2>
+                <div class="text-xs text-slate-400">
+                    <span x-show="powerCurve.activity_count > 0" x-text="'Based on ' + powerCurve.activity_count + ' activities'"></span>
+                    <span x-show="powerCurve.estimated_ftp > 0" x-text="' | Estimated FTP: ' + powerCurve.estimated_ftp + 'W'"></span>
+                </div>
+            </div>
+            <div x-show="!powerCurve.hasData" class="text-center py-8 text-slate-500 text-sm">
+                No power data available yet. Sync some Strava activities with power meter data to see your power curve.
+            </div>
+            <div x-show="powerCurve.hasData">
+                <canvas id="powerCurveChart"></canvas>
+                <div class="grid grid-cols-2 sm:grid-cols-5 gap-2 mt-4">
+                    <template x-for="point in powerCurve.curve" :key="point.label">
+                        <div class="bg-slate-800/50 rounded-lg p-2.5 text-center">
+                            <div class="text-xs text-slate-500" x-text="point.duration_label"></div>
+                            <div class="text-base font-bold" :class="powerCurveZoneColor(point.zone)" x-text="point.power_watts + 'W'"></div>
+                            <div class="text-[10px] text-slate-500" x-text="'(' + point.percent_of_ftp + '% FTP)'"></div>
+                            <div class="text-[10px] text-slate-600 mt-0.5 capitalize" x-text="point.zone"></div>
+                        </div>
+                    </template>
+                </div>
+                <!-- Dominant Zone -->
+                <div x-show="powerCurve.dominant_zone !== 'insufficient_data' && powerCurve.dominant_zone !== 'Balanced'"
+                     class="mt-3 p-3 bg-slate-800/30 rounded-lg border border-slate-700/50">
+                    <div class="text-xs text-slate-400">Dominant Energy System</div>
+                    <div class="text-sm font-semibold text-cyan-400" x-text="powerCurve.dominant_zone"></div>
+                </div>
+                <!-- FTP Trend (monthly) -->
+                <div x-show="powerCurve.trend && powerCurve.trend.length > 0" class="mt-6">
+                    <h3 class="text-sm font-semibold mb-2 text-slate-300">Estimated FTP Trend</h3>
+                    <canvas id="ftpTrendChart"></canvas>
+                </div>
+            </div>
+        </div>
     </main>
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
@@ -94,12 +132,22 @@
 
                 async init() {
                     await this.loadData();
+                    await this.loadPowerCurve();
                 },
                 async loadData() {
                     try {
                         const res = await fetch('/api/analytics/weekly', { headers: this.getHeaders() });
                         if (res.status === 401) {
-                            window.location.href = '/auth/login';
+                            const refreshed = await this.refreshToken();
+                            if (refreshed) {
+                                const retryHeaders = this.getHeaders();
+                                const res2 = await fetch('/api/analytics/weekly', { headers: retryHeaders });
+                                if (res2.ok) {
+                                    this.data = await res2.json();
+                                    this.computeSummary();
+                                    this.renderCharts();
+                                }
+                            }
                             return;
                         }
                         if (!res.ok) return;
@@ -109,6 +157,52 @@
                     } catch (e) {
                         console.error('Failed to load analytics:', e);
                     }
+                },
+                async refreshToken() {
+                    const token = localStorage.getItem('token');
+                    if (!token) return false;
+                    try {
+                        const res = await fetch('/api/auth/refresh', {
+                            method: 'POST',
+                            headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+                        });
+                        if (!res.ok) return false;
+                        const data = await res.json();
+                        localStorage.setItem('token', data.access_token);
+                        return true;
+                    } catch(e) { return false; }
+                },
+                async loadPowerCurve() {
+                    try {
+                        const res = await fetch('/api/dashboard/power-curve', { headers: this.getHeaders() });
+                        if (!res.ok) return;
+                        const data = await res.json();
+                        this.powerCurve.curve = data.curve || [];
+                        this.powerCurve.activity_count = data.activity_count || 0;
+                        this.powerCurve.estimated_ftp = data.estimated_ftp || 0;
+                        this.powerCurve.dominant_zone = data.dominant_zone || 'insufficient_data';
+                        this.powerCurve.trend = data.trend || [];
+                        this.powerCurve.hasData = this.powerCurve.curve.length > 0;
+                        this.$nextTick(() => this.renderPowerCurve());
+                    } catch (e) {
+                        console.error('Failed to load power curve:', e);
+                    }
+                },
+                powerCurveZoneColor(zone) {
+                    const colors = {
+                        'neuromuscular': 'text-red-400',
+                        'anaerobic': 'text-orange-400',
+                        'vo2max': 'text-pink-400',
+                        'threshold': 'text-purple-400',
+                        'tempo': 'text-blue-400',
+                        'endurance': 'text-cyan-400',
+                        'no_data': 'text-slate-500',
+                    };
+                    return colors[zone] || 'text-slate-300';
+                },
+                renderPowerCurve() {
+                    this.renderPowerCurveChart();
+                    this.renderFtpTrendChart();
                 },
                 computeSummary() {
                     let totalTss = 0, totalHours = 0, totalRides = 0;
@@ -339,10 +433,164 @@
                             }
                         }
                     });
-                }
+                },
+                renderPowerCurveChart() {
+                    if (this.powerCurveChart) this.powerCurveChart.destroy();
+                    const ctx = document.getElementById('powerCurveChart');
+                    if (!ctx) return;
+                    const points = this.powerCurve.curve;
+                    if (!points || points.length === 0) return;
+
+                    const zoneColors = {
+                        'neuromuscular': 'rgba(248, 113, 113, 0.8)',
+                        'anaerobic': 'rgba(251, 146, 60, 0.8)',
+                        'vo2max': 'rgba(244, 114, 182, 0.8)',
+                        'threshold': 'rgba(167, 139, 250, 0.8)',
+                        'tempo': 'rgba(96, 165, 250, 0.8)',
+                        'endurance': 'rgba(34, 211, 238, 0.8)',
+                    };
+
+                    this.powerCurveChart = new Chart(ctx.getContext('2d'), {
+                        type: 'line',
+                        data: {
+                            labels: points.map(p => p.label),
+                            datasets: [{
+                                label: 'Best Power',
+                                data: points.map(p => p.power_watts),
+                                backgroundColor: 'rgba(34, 211, 238, 0.1)',
+                                borderColor: '#22d3ee',
+                                borderWidth: 3,
+                                pointBackgroundColor: points.map(p => zoneColors[p.zone] || '#22d3ee'),
+                                pointBorderColor: '#0f172a',
+                                pointBorderWidth: 2,
+                                pointRadius: 6,
+                                pointHoverRadius: 8,
+                                fill: true,
+                                tension: 0.3,
+                            }, {
+                                label: 'FTP Reference',
+                                data: points.map(() => this.powerCurve.estimated_ftp || this.powerCurve.ftp),
+                                borderColor: 'rgba(251, 191, 36, 0.5)',
+                                borderWidth: 1,
+                                borderDash: [6, 4],
+                                pointRadius: 0,
+                                fill: false,
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            interaction: {
+                                intersect: false,
+                                mode: 'index',
+                            },
+                            plugins: {
+                                legend: {
+                                    labels: { color: '#94a3b8', font: { size: 12 } }
+                                },
+                                tooltip: {
+                                    backgroundColor: '#1e293b',
+                                    titleColor: '#e2e8f0',
+                                    bodyColor: '#94a3b8',
+                                    borderColor: '#334155',
+                                    borderWidth: 1,
+                                    padding: 12,
+                                    callbacks: {
+                                        afterBody: function(context) {
+                                            const idx = context[0].dataIndex;
+                                            const point = points[idx];
+                                            return point.duration_label + ' | ' + point.percent_of_ftp + '% FTP';
+                                        }
+                                    }
+                                }
+                            },
+                            scales: {
+                                x: {
+                                    grid: { color: 'rgba(51, 65, 85, 0.5)' },
+                                    ticks: { color: '#64748b' },
+                                    title: { display: true, text: 'Duration', color: '#94a3b8' }
+                                },
+                                y: {
+                                    beginAtZero: true,
+                                    grid: { color: 'rgba(51, 65, 85, 0.5)' },
+                                    ticks: { color: '#64748b' },
+                                    title: { display: true, text: 'Watts', color: '#94a3b8' }
+                                }
+                            }
+                        }
+                    });
+                },
+                renderFtpTrendChart() {
+                    if (this.ftpTrendChart) this.ftpTrendChart.destroy();
+                    const ctx = document.getElementById('ftpTrendChart');
+                    if (!ctx) return;
+                    const trend = this.powerCurve.trend;
+                    if (!trend || trend.length < 2) return;
+
+                    this.ftpTrendChart = new Chart(ctx.getContext('2d'), {
+                        type: 'line',
+                        data: {
+                            labels: trend.map(t => t.month),
+                            datasets: [{
+                                label: 'Est. FTP',
+                                data: trend.map(t => t.estimated_ftp),
+                                borderColor: '#fbbf24',
+                                backgroundColor: 'rgba(251, 191, 36, 0.1)',
+                                fill: true,
+                                tension: 0.3,
+                                pointRadius: 4,
+                                pointBackgroundColor: '#fbbf24',
+                                pointBorderColor: '#0f172a',
+                                pointBorderWidth: 2,
+                                borderWidth: 2,
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            plugins: {
+                                legend: {
+                                    labels: { color: '#94a3b8', font: { size: 12 } }
+                                },
+                                tooltip: {
+                                    backgroundColor: '#1e293b',
+                                    titleColor: '#e2e8f0',
+                                    bodyColor: '#94a3b8',
+                                    borderColor: '#334155',
+                                    borderWidth: 1,
+                                    padding: 12,
+                                    callbacks: {
+                                        label: context => context.dataset.label + ': ' + context.parsed.y.toFixed(0) + 'W'
+                                    }
+                                }
+                            },
+                            scales: {
+                                x: {
+                                    grid: { color: 'rgba(51, 65, 85, 0.5)' },
+                                    ticks: { color: '#64748b' }
+                                },
+                                y: {
+                                    beginAtZero: false,
+                                    grid: { color: 'rgba(51, 65, 85, 0.5)' },
+                                    ticks: { color: '#64748b' },
+                                    title: { display: true, text: 'Watts', color: '#94a3b8' }
+                                }
+                            }
+                        }
+                    });
+                },
+                powerCurveChart: null,
+                ftpTrendChart: null,
+                powerCurve: {
+                    curve: [],
+                    activity_count: 0,
+                    estimated_ftp: 0,
+                    dominant_zone: 'insufficient_data',
+                    trend: [],
+                    hasData: false,
+                },
             }
         }
-    </script>
     {% endraw %}
 </body>
 </html>
