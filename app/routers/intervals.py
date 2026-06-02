@@ -1,4 +1,8 @@
-"""Intervals.icu router — connect, sync, and manage Intervals.icu data."""
+"""Intervals.icu router — connect, sync, and manage Intervals.icu data.
+
+API keys are encrypted at rest in the database (per-user), never in plain
+text files or config.
+"""
 
 import logging
 from datetime import date, timedelta
@@ -20,20 +24,48 @@ from app.services.intervals_client import (
     activity_to_dict,
     training_metrics_to_dict,
 )
+from app.services.encryption import encrypt, decrypt
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/intervals", tags=["intervals"])
 
 
-async def get_client() -> IntervalsClient:
-    """Get an authenticated Intervals.icu client or raise."""
-    if not settings.intervals_api_key:
+async def get_client_for_user(user: User) -> IntervalsClient:
+    """Get an authenticated Intervals.icu client for a specific user.
+
+    Decrypts the user's stored API key from the database. Falls back
+    to the global ``settings.intervals_api_key`` for backwards compat
+    (server-level config), but the per-user encrypted key takes priority.
+    """
+    api_key = None
+    athlete_id = None
+
+    # Per-user encrypted key (preferred — set via Settings UI)
+    if user.intervals_api_key_encrypted:
+        decrypted = decrypt(user.intervals_api_key_encrypted)
+        if decrypted:
+            api_key = decrypted
+            athlete_id = user.intervals_athlete_id or settings.intervals_athlete_id
+            logger.info(f"Using per-user encrypted API key for user {user.id}")
+
+    # Fall back to server-level env config
+    if not api_key:
+        api_key = settings.intervals_api_key
+        athlete_id = settings.intervals_athlete_id
+        if api_key:
+            logger.info("Using server-level INTERVALS_API_KEY from .env")
+
+    if not api_key:
         raise HTTPException(
             status_code=400,
-            detail="Intervals.icu not configured. Set INTERVALS_API_KEY in .env or in Settings.",
+            detail=(
+                "Intervals.icu not configured. "
+                "Add your API key in Settings to store it encrypted in your account."
+            ),
         )
-    return IntervalsClient()
+
+    return IntervalsClient(api_key=api_key, athlete_id=athlete_id)
 
 
 @router.get("/status")
@@ -41,14 +73,18 @@ async def get_status(
     current_user: User = Depends(get_current_user),
 ):
     """Check Intervals.icu connection status and athlete info."""
-    if not settings.intervals_api_key:
+    # Quick check: do we have any key stored?
+    has_key = bool(
+        current_user.intervals_api_key_encrypted or settings.intervals_api_key
+    )
+    if not has_key:
         return {
             "connected": False,
             "message": "Not configured. Add your Intervals.icu API key in Settings.",
         }
 
     try:
-        client = await get_client()
+        client = await get_client_for_user(current_user)
         athlete = await client.get_athlete()
         return {
             "connected": True,
@@ -71,7 +107,7 @@ async def get_athlete(
     current_user: User = Depends(get_current_user),
 ):
     """Get full athlete profile from Intervals.icu."""
-    client = await get_client()
+    client = await get_client_for_user(current_user)
     try:
         athlete = await client.get_athlete()
         zones = await client.get_zones()
@@ -90,7 +126,7 @@ async def sync_activities(
     db: Session = Depends(get_db),
 ):
     """Sync activities from Intervals.icu into our local database."""
-    client = await get_client()
+    client = await get_client_for_user(current_user)
 
     try:
         activities = await client.get_activities(days_back=days_back, limit=200)
@@ -218,7 +254,7 @@ async def get_power_curve(
     current_user: User = Depends(get_current_user),
 ):
     """Get power-duration curve from Intervals.icu."""
-    client = await get_client()
+    client = await get_client_for_user(current_user)
     try:
         curve = await client.get_power_curve(days=days)
         trend = await client.get_power_curve_trend()
@@ -237,7 +273,7 @@ async def get_training_metrics(
     current_user: User = Depends(get_current_user),
 ):
     """Get pre-computed training metrics (CTL/ATL/TSB) from Intervals.icu."""
-    client = await get_client()
+    client = await get_client_for_user(current_user)
     try:
         metrics = await client.get_training_metrics(days=days)
         load = await client.get_training_load()
@@ -250,15 +286,58 @@ async def get_training_metrics(
         raise HTTPException(status_code=502, detail=str(e))
 
 
-@router.post("/update-settings")
-def update_intervals_settings(
+@router.post("/save-keys")
+def save_intervals_keys(
     api_key: str = Query(..., description="Intervals.icu API key"),
+    athlete_id: str = Query("", description="Intervals.icu athlete ID"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Store Intervals.icu API key temporarily for this session.
+    """Save Intervals.icu credentials encrypted in the user's account.
 
-    Note: For permanent storage, add INTERVALS_API_KEY to .env file.
+    The API key is encrypted with Fernet (AES-128-CBC) using the app's
+    SECRET_KEY before being stored. The athlete ID is stored in plain
+    text (not sensitive — it's a public identifier).
     """
-    settings.intervals_api_key = api_key
-    return {"message": "Intervals.icu API key updated for this session"}
+    encrypted = encrypt(api_key)
+    if encrypted is None:
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to encrypt API key. Check that SECRET_KEY is configured.",
+        )
+
+    current_user.intervals_api_key_encrypted = encrypted
+    if athlete_id:
+        current_user.intervals_athlete_id = athlete_id
+    db.commit()
+
+    logger.info(f"Saved encrypted Intervals.icu credentials for user {current_user.id}")
+    return {
+        "message": "Intervals.icu credentials saved securely (encrypted at rest).",
+    }
+
+
+@router.post("/clear-keys")
+def clear_intervals_keys(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Remove stored Intervals.icu credentials from the user's account."""
+    current_user.intervals_api_key_encrypted = None
+    current_user.intervals_athlete_id = None
+    db.commit()
+    return {"message": "Intervals.icu credentials cleared."}
+
+
+@router.get("/key-status")
+def get_key_status(
+    current_user: User = Depends(get_current_user),
+):
+    """Check whether the current user has Intervals.icu keys stored."""
+    has_key = bool(current_user.intervals_api_key_encrypted)
+    athlete_id = current_user.intervals_athlete_id or settings.intervals_athlete_id
+    return {
+        "has_key": has_key,
+        "athlete_id": athlete_id or None,
+        "source": "user" if has_key else ("server_config" if settings.intervals_api_key else None),
+    }

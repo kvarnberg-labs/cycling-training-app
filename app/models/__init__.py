@@ -62,6 +62,10 @@ class User(Base):
     location_lon = Column(Float, nullable=True)  # Longitude for weather forecast
     weather_preference = Column(String(20), default="auto")  # "auto", "indoor", "outdoor"
 
+    # Encrypted API keys for external services
+    intervals_api_key_encrypted = Column(String(512), nullable=True)
+    intervals_athlete_id = Column(String(100), nullable=True)
+
     # Relationships
     strava_activities = relationship("StravaActivity", back_populates="user", cascade="all, delete-orphan")
     workouts = relationship("Workout", back_populates="user", cascade="all, delete-orphan")
