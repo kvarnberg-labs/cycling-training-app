@@ -1,4 +1,8 @@
-"""Tests for the LLM-based workout recommender service."""
+"""Tests for the LLM-based workout recommender service using the OpenAI Agents SDK.
+
+Tests the context builder, agent initialisation, and output model validation.
+The actual LLM call testing is handled by the SDK — we test the integration layer.
+"""
 
 import json
 from datetime import date, datetime
@@ -7,19 +11,21 @@ from typing import Any, Dict, List
 import pytest
 
 from app.services.llm_recommender import (
-    build_athlete_context,
-    build_recommendation_prompt,
-    parse_llm_response,
-    validate_workout,
+    _build_athlete_context,
+    _summarize_weekly_training,
+    WeeklyWorkoutPlan,
+    WorkoutRecommendation,
+    generate_llm_plan,
 )
+from app.config import settings
 
 
 class TestBuildAthleteContext:
-    """Tests for building athlete context for the LLM prompt."""
+    """Tests for building athlete context for the agent input."""
 
     def test_basic_context_no_data(self):
         """Context should still work with minimal data."""
-        context = build_athlete_context(
+        context = _build_athlete_context(
             user_profile={"ftp": 250, "weight_kg": 72, "training_goal": "base"},
             training_metrics=None,
             recent_activities=[],
@@ -33,7 +39,7 @@ class TestBuildAthleteContext:
 
     def test_context_with_training_metrics(self):
         """Should include CTL/ATL/TSB and interpretation."""
-        context = build_athlete_context(
+        context = _build_athlete_context(
             user_profile={"ftp": 200, "weight_kg": 75, "training_goal": "build"},
             training_metrics={"ctl": 60, "atl": 45, "tsb": 15},
             recent_activities=[],
@@ -42,7 +48,7 @@ class TestBuildAthleteContext:
         assert "CTL (Fitness): 60.0" in context
         assert "ATL (Fatigue): 45.0" in context
         assert "TSB (Form): 15.0" in context
-        # TSB 15 is in the "peaking" range (15 <= tsb)
+        # TSB 15 falls in the "peaking" range (15 <= tsb)
         assert "Peaking" in context
 
     def test_context_with_strava_activities(self):
@@ -62,7 +68,7 @@ class TestBuildAthleteContext:
                 "intensity_factor": 0.85,
             }
         ]
-        context = build_athlete_context(
+        context = _build_athlete_context(
             user_profile={"ftp": 250, "weight_kg": 75, "training_goal": "build"},
             training_metrics={"ctl": 50, "atl": 40, "tsb": 10},
             recent_activities=activities,
@@ -84,7 +90,7 @@ class TestBuildAthleteContext:
                 "duration_minutes": 90,
             }
         ]
-        context = build_athlete_context(
+        context = _build_athlete_context(
             user_profile={"ftp": 200, "weight_kg": 75, "training_goal": "base"},
             training_metrics=None,
             recent_activities=[],
@@ -108,7 +114,7 @@ class TestBuildAthleteContext:
                 "outdoor": False,
             }
         }
-        context = build_athlete_context(
+        context = _build_athlete_context(
             user_profile={"ftp": 200, "weight_kg": 75, "training_goal": "base"},
             training_metrics=None,
             recent_activities=[],
@@ -122,7 +128,7 @@ class TestBuildAthleteContext:
 
     def test_deep_fatigue_interpretation(self):
         """Should flag deep fatigue for very negative TSB."""
-        context = build_athlete_context(
+        context = _build_athlete_context(
             user_profile={"ftp": 200, "weight_kg": 75, "training_goal": "race"},
             training_metrics={"ctl": 80, "atl": 110, "tsb": -30},
             recent_activities=[],
@@ -132,7 +138,7 @@ class TestBuildAthleteContext:
 
     def test_peaking_interpretation(self):
         """Should flag peaking for very positive TSB."""
-        context = build_athlete_context(
+        context = _build_athlete_context(
             user_profile={"ftp": 200, "weight_kg": 75, "training_goal": "race"},
             training_metrics={"ctl": 80, "atl": 50, "tsb": 30},
             recent_activities=[],
@@ -142,7 +148,7 @@ class TestBuildAthleteContext:
 
     def test_profile_with_location(self):
         """Should include location when lat/lon are set."""
-        context = build_athlete_context(
+        context = _build_athlete_context(
             user_profile={
                 "ftp": 200,
                 "weight_kg": 75,
@@ -158,189 +164,284 @@ class TestBuildAthleteContext:
         assert "lon 18.07" in context
 
 
-class TestBuildRecommendationPrompt:
-    """Tests for the full prompt builder."""
+class TestWeeklyTrainingSummary:
+    """Tests for the weekly training summary helper."""
 
-    def test_prompt_has_correct_structure(self):
-        """Should return system + user messages."""
-        context = build_athlete_context(
-            user_profile={"ftp": 200, "weight_kg": 75, "training_goal": "base"},
-            training_metrics={"ctl": 50, "atl": 40, "tsb": 10},
-            recent_activities=[],
-            existing_scheduled=[],
-        )
-        messages = build_recommendation_prompt(
-            week_start=date(2026, 6, 1),
-            athlete_context=context,
-        )
-        assert len(messages) == 2
-        assert messages[0]["role"] == "system"
-        assert "expert cycling coach" in messages[0]["content"].lower()
-        assert messages[1]["role"] == "user"
-        assert "2026-06-01" in messages[1]["content"]
-
-    def test_output_format_instructions_included(self):
-        """Should include JSON output format instructions."""
-        context = build_athlete_context(
-            user_profile={"ftp": 200, "weight_kg": 75, "training_goal": "base"},
-            training_metrics=None,
-            recent_activities=[],
-            existing_scheduled=[],
-        )
-        messages = build_recommendation_prompt(
-            week_start=date(2026, 6, 1),
-            athlete_context=context,
-        )
-        user_msg = messages[1]["content"]
-        assert "scheduled_date" in user_msg
-        assert "workout_type" in user_msg
-        assert "duration_minutes" in user_msg
-
-
-class TestParseLLMResponse:
-    """Tests for parsing LLM JSON responses."""
-
-    def test_parse_direct_json_array(self):
-        """Should parse a bare JSON array."""
-        response = json.dumps([
+    def test_summarises_by_iso_week(self):
+        """Should group activities by ISO week."""
+        activities = [
             {
-                "scheduled_date": "2026-06-02",
-                "workout_type": "endurance",
-                "title": "Endurance Ride",
-                "description": "Steady Zone 2",
-                "duration_minutes": 120,
-                "target_power_zone": "Zone 2",
-                "target_rpe": 3,
-                "is_indoor": False,
-            }
-        ])
-        result = parse_llm_response(response)
-        assert result is not None
-        assert len(result) == 1
-        assert result[0]["workout_type"] == "endurance"
+                "start_date": "2026-06-01T10:00:00Z",
+                "moving_time": 7200,
+                "distance": 40000,
+                "training_stress_score": 100,
+            },
+            {
+                "start_date": "2026-06-03T10:00:00Z",
+                "moving_time": 5400,
+                "distance": 30000,
+                "training_stress_score": 80,
+            },
+        ]
+        summary = _summarize_weekly_training(activities)
+        assert len(summary) >= 1
+        # Both activities should be in the same week
+        week_entry = [s for s in summary if "2026-W23" in s["week_label"]]
+        assert len(week_entry) == 1
+        assert week_entry[0]["ride_count"] == 2
+        assert week_entry[0]["total_tss"] == 180.0
+        # 7200 + 5400 = 12600 seconds / 3600 = 3.5h
+        assert week_entry[0]["total_hours"] == 3.5
+        # 40km + 30km = 70km
+        assert week_entry[0]["total_distance_km"] == 70.0
 
-    def test_parse_json_in_code_fence(self):
-        """Should extract JSON from markdown code fences."""
-        response = """Here is the plan:
+    def test_empty_activities(self):
+        """Empty list should return empty summary."""
+        assert _summarize_weekly_training([]) == []
 
-```json
-[
-  {
-    "scheduled_date": "2026-06-02",
-    "workout_type": "endurance",
-    "title": "Easy Endurance",
-    "description": "Zone 2 ride",
-    "duration_minutes": 90,
-    "target_power_zone": "Zone 2",
-    "target_rpe": 3,
-    "is_indoor": false
-  }
-]
-```"""
-        result = parse_llm_response(response)
-        assert result is not None
-        assert len(result) == 1
-        assert result[0]["title"] == "Easy Endurance"
-
-    def test_parse_wrapped_in_workouts_key(self):
-        """Should handle JSON with a 'workouts' wrapper key."""
-        response = json.dumps({
-            "workouts": [
-                {
-                    "scheduled_date": "2026-06-02",
-                    "workout_type": "recovery",
-                    "title": "Recovery Spin",
-                    "description": "Easy spin",
-                    "duration_minutes": 45,
-                    "target_power_zone": "Zone 1",
-                    "target_rpe": 2,
-                    "is_indoor": True,
-                }
-            ]
-        })
-        result = parse_llm_response(response)
-        assert result is not None
-        assert len(result) == 1
-        assert result[0]["workout_type"] == "recovery"
-
-    def test_parse_with_recommendations_key(self):
-        """Should handle 'recommendations' wrapper key."""
-        response = json.dumps({
-            "recommendations": [
-                {
-                    "scheduled_date": "2026-06-03",
-                    "workout_type": "threshold",
-                    "title": "Threshold Intervals",
-                    "description": "3x12min at FTP",
-                    "duration_minutes": 75,
-                    "target_power_zone": "Threshold",
-                    "target_rpe": 7,
-                    "is_indoor": False,
-                }
-            ]
-        })
-        result = parse_llm_response(response)
-        assert result is not None
-        assert len(result) == 1
-
-    def test_parse_empty_response_returns_none(self):
-        """Empty or None response should return None."""
-        assert parse_llm_response(None) is None
-        assert parse_llm_response("") is None
-        assert parse_llm_response("I couldn't generate a plan") is None
-
-    def test_parse_invalid_json_returns_none(self):
-        """Malformed JSON should return None."""
-        assert parse_llm_response("{invalid json") is None
-
-    def test_parse_empty_array_returns_empty(self):
-        """Empty array should return empty list."""
-        result = parse_llm_response("[]")
-        assert result == []
+    def test_missing_start_date_skipped(self):
+        """Activities without start_date should be skipped."""
+        activities = [{"moving_time": 3600, "distance": 20000}]
+        assert _summarize_weekly_training(activities) == []
 
 
-class TestValidateWorkout:
-    """Tests for workout validation."""
+class TestWorkoutRecommendationModel:
+    """Tests for the Pydantic output model used by the agent."""
 
-    def test_valid_workout(self):
-        """A complete, valid workout should pass."""
-        assert validate_workout({
-            "scheduled_date": "2026-06-02",
-            "workout_type": "endurance",
-            "title": "Long Ride",
-            "description": "Zone 2",
-            "duration_minutes": 120,
-        })
+    def test_valid_recommendation(self):
+        """A complete, valid recommendation should pass Pydantic validation."""
+        w = WorkoutRecommendation(
+            scheduled_date="2026-06-02",
+            workout_type="endurance",
+            title="Long Ride",
+            description="Steady Zone 2 effort",
+            duration_minutes=120,
+            target_power_zone="Zone 2 (56-75% FTP)",
+            target_rpe=3,
+            is_indoor=False,
+        )
+        assert w.scheduled_date == "2026-06-02"
+        assert w.workout_type == "endurance"
+        assert w.duration_minutes == 120
 
-    def test_missing_required_fields(self):
-        """Missing scheduled_date, workout_type, or title should fail."""
-        assert not validate_workout({
-            "workout_type": "endurance",
-            "title": "Ride",
-        })
-        assert not validate_workout({
-            "scheduled_date": "2026-06-02",
-            "title": "Ride",
-        })
-        assert not validate_workout({
-            "scheduled_date": "2026-06-02",
-            "workout_type": "endurance",
-        })
+    def test_default_values(self):
+        """Should use sensible defaults for optional fields."""
+        w = WorkoutRecommendation(
+            scheduled_date="2026-06-02",
+            workout_type="recovery",
+            title="Recovery Spin",
+        )
+        assert w.description == ""
+        assert w.duration_minutes == 60
+        assert w.target_power_zone == ""
+        assert w.target_rpe is None
+        assert w.is_indoor is False
 
-    def test_invalid_workout_type(self):
-        """Unknown workout types should be rejected."""
-        assert not validate_workout({
-            "scheduled_date": "2026-06-02",
-            "workout_type": "yoga",
-            "title": "Yoga Session",
-        })
-
-    def test_all_valid_types(self):
-        """All valid workout types should pass."""
-        valid_types = ["recovery", "endurance", "tempo", "threshold", "vo2max", "sprint", "interval"]
+    def test_valid_workout_types(self):
+        """All valid workout types should be accepted."""
+        valid_types = [
+            "recovery", "endurance", "tempo", "threshold",
+            "vo2max", "sprint", "interval",
+        ]
         for wtype in valid_types:
-            assert validate_workout({
-                "scheduled_date": "2026-06-02",
-                "workout_type": wtype,
-                "title": "Test Workout",
-            }), f"Type {wtype} should be valid"
+            w = WorkoutRecommendation(
+                scheduled_date="2026-06-02",
+                workout_type=wtype,
+                title="Test",
+            )
+            assert w.workout_type == wtype
+
+    def test_duration_bounds_enforced(self):
+        """Duration should be clamped by Pydantic validators (ge=20, le=300)."""
+        with pytest.raises(ValueError):
+            WorkoutRecommendation(
+                scheduled_date="2026-06-02",
+                workout_type="endurance",
+                title="Too Long",
+                duration_minutes=999,
+            )
+        with pytest.raises(ValueError):
+            WorkoutRecommendation(
+                scheduled_date="2026-06-02",
+                workout_type="endurance",
+                title="Too Short",
+                duration_minutes=5,
+            )
+
+    def test_rpe_bounds(self):
+        """RPE should be 1-10."""
+        with pytest.raises(ValueError):
+            WorkoutRecommendation(
+                scheduled_date="2026-06-02",
+                workout_type="endurance",
+                title="Bad RPE",
+                target_rpe=15,
+            )
+
+
+class TestWeeklyWorkoutPlanModel:
+    """Tests for the weekly plan container model."""
+
+    def test_valid_plan(self):
+        """A plan with valid workouts should pass."""
+        plan = WeeklyWorkoutPlan(workouts=[
+            WorkoutRecommendation(
+                scheduled_date="2026-06-02",
+                workout_type="endurance",
+                title="Endurance Ride",
+            ),
+            WorkoutRecommendation(
+                scheduled_date="2026-06-03",
+                workout_type="threshold",
+                title="Threshold Intervals",
+            ),
+        ])
+        assert len(plan.workouts) == 2
+
+    def test_empty_plan_fails(self):
+        """A plan with no workouts should fail validation."""
+        with pytest.raises(ValueError):
+            WeeklyWorkoutPlan(workouts=[])
+
+    def test_too_many_workouts_fails(self):
+        """A plan with more than 10 workouts should fail."""
+        with pytest.raises(ValueError):
+            WeeklyWorkoutPlan(workouts=[
+                WorkoutRecommendation(
+                    scheduled_date="2026-06-02",
+                    workout_type="endurance",
+                    title=f"Workout {i}",
+                ) for i in range(15)
+            ])
+
+
+class TestGenerateLLMPlan:
+    """Tests for the main entry point that calls the agent."""
+
+    def test_returns_none_when_not_configured(self):
+        """Should return None when LLM is not configured (no API key/base)."""
+        # Temporarily clear the settings
+        original_key = settings.llm_api_key
+        original_base = settings.llm_api_base
+        settings.llm_api_key = ""
+        settings.llm_api_base = ""
+
+        # Reset the lazy-initialised agent
+        import app.services.llm_recommender as mod
+        mod._client_initialised = False
+        mod._agent = None
+
+        result = None
+        import asyncio
+        try:
+            result = asyncio.run(generate_llm_plan(
+                user_id=1,
+                user_profile={"ftp": 200, "weight_kg": 75, "training_goal": "base"},
+                training_metrics={"ctl": 50, "atl": 40, "tsb": 10},
+                recent_activities=[],
+                existing_scheduled=[],
+                week_start=date(2026, 6, 1),
+            ))
+        finally:
+            # Restore
+            settings.llm_api_key = original_key
+            settings.llm_api_base = original_base
+            mod._client_initialised = False
+            mod._agent = None
+
+        assert result is None
+
+    def test_creates_proper_input_format(self, monkeypatch):
+        """When called with LLM configured, should pass proper input to the agent."""
+        api_key = settings.llm_api_key
+        api_base = settings.llm_api_base
+        if not api_key or not api_base:
+            pytest.skip("No LLM configured in .env — skipping integration test")
+
+        # Reset lazy init so the agent gets created with real config
+        import app.services.llm_recommender as mod
+        mod._client_initialised = False
+        mod._agent = None
+
+        import asyncio
+        result = asyncio.run(generate_llm_plan(
+            user_id=1,
+            user_profile={
+                "ftp": 240,
+                "weight_kg": 72,
+                "training_goal": "build",
+                "resting_hr": 55,
+                "max_hr": 188,
+            },
+            training_metrics={"ctl": 65, "atl": 50, "tsb": 15},
+            recent_activities=[
+                {
+                    "start_date": "2026-06-01T10:00:00Z",
+                    "activity_type": "Ride",
+                    "name": "Weekend Group Ride",
+                    "moving_time": 10800,
+                    "distance": 80000,
+                    "average_watts": 195,
+                    "weighted_average_watts": 205,
+                    "average_heartrate": 142,
+                    "total_elevation_gain": 450,
+                    "training_stress_score": 150.0,
+                    "intensity_factor": 0.85,
+                },
+                {
+                    "start_date": "2026-06-03T07:00:00Z",
+                    "activity_type": "VirtualRide",
+                    "name": "Zwift Race",
+                    "moving_time": 5400,
+                    "distance": 35000,
+                    "average_watts": 220,
+                    "weighted_average_watts": 235,
+                    "average_heartrate": 158,
+                    "total_elevation_gain": 200,
+                    "training_stress_score": 110.0,
+                    "intensity_factor": 0.98,
+                },
+            ],
+            existing_scheduled=[],
+            week_start=date(2026, 6, 8),
+            weather_forecasts={
+                "2026-06-08": {
+                    "label": "Rain",
+                    "symbol": "rain",
+                    "temp_min": 10.0,
+                    "temp_max": 15.0,
+                    "precipitation_mm": 8.0,
+                    "wind_speed_ms": 6.0,
+                    "indoor": True,
+                    "outdoor": False,
+                },
+                "2026-06-09": {
+                    "label": "Clear",
+                    "symbol": "clear",
+                    "temp_min": 12.0,
+                    "temp_max": 20.0,
+                    "precipitation_mm": 0.0,
+                    "wind_speed_ms": 3.0,
+                    "indoor": False,
+                    "outdoor": True,
+                },
+            },
+        ))
+
+        assert result is not None, "Agent should return a plan when LLM is configured"
+        assert len(result) > 0, "Should contain at least one workout"
+        assert len(result) <= 10, "Should not exceed 10 workouts"
+
+        # Verify the format matches what the endpoint expects
+        for w in result:
+            assert "user_id" in w
+            assert "scheduled_date" in w
+            assert "workout_type" in w
+            assert "title" in w
+            assert w["workout_type"] in {
+                "recovery", "endurance", "tempo", "threshold",
+                "vo2max", "sprint", "interval",
+            }
+            assert isinstance(w["is_indoor"], bool)
+            assert w["status"] == "suggested"
+            assert w["source"] == "recommendation"

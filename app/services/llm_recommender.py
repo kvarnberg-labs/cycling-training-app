@@ -1,27 +1,79 @@
-"""LLM-powered workout recommender.
+"""LLM-powered workout recommender using the OpenAI Agents SDK.
 
 Takes Strava activity data, training metrics, and user profile as input,
-constructs a rich prompt with all that context, and calls an OpenAI-compatible
-LLM API to generate structured weekly workout recommendations.
+constructs a rich context prompt, and uses an agent (via the OpenAI Agents SDK)
+to generate structured weekly workout recommendations.
 
-Falls back to the rule-based engine if the LLM is not configured.
+Configured to work with any OpenAI-compatible provider (OpenCode, OpenAI, etc.)
+via LLM_API_KEY and LLM_API_BASE in .env.
+
+Falls back to the rule-based engine if the agent is not configured.
 """
 
-import json
 import logging
 from datetime import date, timedelta
 from typing import Any, Dict, List, Optional
 
-import httpx
+from pydantic import BaseModel, Field
+
+from openai import AsyncOpenAI
+from agents import Agent, Runner, set_default_openai_client, set_tracing_disabled
 
 from app.config import settings
-from app.models import TrainingGoal
-from app.schemas import StravaActivityOut, WorkoutOut
 
 logger = logging.getLogger(__name__)
 
 
-# ── Prompt template ──
+# ── Agent output models (structured output via the Agents SDK) ──
+
+
+class WorkoutRecommendation(BaseModel):
+    """A single workout recommendation for a specific day."""
+    scheduled_date: str = Field(
+        description="Date of the workout in YYYY-MM-DD format"
+    )
+    workout_type: str = Field(
+        description="Type of workout: recovery, endurance, tempo, threshold, vo2max, sprint, or interval"
+    )
+    title: str = Field(
+        description="Catchy, descriptive workout title"
+    )
+    description: str = Field(
+        default="",
+        description="Detailed workout description with specific intervals, durations, and targets"
+    )
+    duration_minutes: int = Field(
+        default=60,
+        description="Duration of the workout in minutes",
+        ge=20,
+        le=300,
+    )
+    target_power_zone: str = Field(
+        default="",
+        description="Power target zone description (e.g. 'Zone 2 (56-75% FTP)')"
+    )
+    target_rpe: Optional[int] = Field(
+        default=None,
+        description="Rate of Perceived Exertion on a 1-10 scale",
+        ge=1,
+        le=10,
+    )
+    is_indoor: bool = Field(
+        default=False,
+        description="Whether this should be an indoor workout (Zwift) due to weather"
+    )
+
+
+class WeeklyWorkoutPlan(BaseModel):
+    """A weekly training plan with 3-6 recommended workouts."""
+    workouts: List[WorkoutRecommendation] = Field(
+        description="List of 3-6 workout recommendations for the week",
+        min_length=1,
+        max_length=10,
+    )
+
+
+# ── Agent definition ──
 
 SYSTEM_PROMPT = """You are an expert cycling coach and sports scientist, similar to TrainingPeaks but smarter. Your specialty is designing personalized weekly training plans based on an athlete's actual Strava ride data, training load metrics, and goals.
 
@@ -33,19 +85,31 @@ You have deep knowledge of:
 - Weather-aware training decisions (indoor Zwift vs outdoor riding)
 - Swedish/Nordic cycling conditions
 
-Analyze the athlete's data below and design an optimal training week."""
+Analyze the athlete's data below and design an optimal training week.
 
-WORKOUT_LIBRARY_DESCRIPTION = """Available workout types and their purpose:
+Available workout types and their purpose:
 - recovery: Very easy spinning (Zone 1, RPE 2-3). 40-60 min. Active recovery, flush legs.
 - endurance: Steady Zone 2 (56-75% FTP, RPE 3-4). 60-180 min. Aerobic base building.
 - tempo: Sustained Zone 3 (76-87% FTP, RPE 5-6). 60-90 min. Muscular endurance.
 - threshold: Near-FTP efforts (88-105% FTP, RPE 7-8). 50-80 min. Power at FTP.
 - vo2max: Hard intervals (106-120% FTP, RPE 9). 45-65 min. Max aerobic power.
 - sprint: All-out efforts (>120% FTP, RPE 10). 40-55 min. Neuromuscular power.
-- interval: Mixed/variable intensity. 60-75 min. Race simulation, Fartlek."""
+- interval: Mixed/variable intensity. 60-75 min. Race simulation, Fartlek.
+
+Follow these principles when designing the plan:
+1. Periodization: Match workout intensity/duration to the training phase
+2. Progressive overload: Build load week-over-week where appropriate
+3. Variety: Don't repeat the same workout type on consecutive days
+4. Recovery: Schedule rest days or recovery rides between hard sessions
+5. Weather awareness: Bad weather → suggest indoor/Zwift sessions
+6. Realism: Workouts must be achievable given the athlete's current load and fatigue
+7. Specificity: Write detailed, actionable descriptions with interval structures"""
 
 
-def build_athlete_context(
+# ── Context builder ──
+
+
+def _build_athlete_context(
     user_profile: Dict[str, Any],
     training_metrics: Optional[Dict[str, float]],
     recent_activities: List[Dict[str, Any]],
@@ -62,7 +126,7 @@ def build_athlete_context(
         weather_forecasts: Optional dict of {date: {weather_info}}
 
     Returns:
-        Formatted context string for the LLM prompt
+        Formatted context string for the agent input
     """
     lines = []
 
@@ -91,7 +155,6 @@ def build_athlete_context(
         lines.append(f"- CTL (Fitness): {ctl:.1f}")
         lines.append(f"- ATL (Fatigue): {atl:.1f}")
         lines.append(f"- TSB (Form): {tsb:.1f}")
-        # Interpret TSB
         if tsb < -20:
             lines.append("- Status: Deep fatigue zone — prioritize recovery")
         elif tsb < -10:
@@ -109,9 +172,7 @@ def build_athlete_context(
     # ── Recent Strava Activities ──
     lines.append("## RECENT STRAVA ACTIVITIES (Last 30 Days)")
     if recent_activities:
-        lines.append(
-            f"Total rides synced: {len(recent_activities)}"
-        )
+        lines.append(f"Total rides synced: {len(recent_activities)}")
         lines.append("")
         lines.append(
             "| Date | Type | Name | Duration | Distance | Avg Power | NP | "
@@ -143,21 +204,16 @@ def build_athlete_context(
                 f"{elev}m | {tss} | {if_val} |"
             )
 
-        # Compute weekly totals
+        # Weekly training summary
         weekly_stats = _summarize_weekly_training(recent_activities)
         lines.append("")
         lines.append("### Weekly Training Summary (Last 4 Weeks)")
-        lines.append(
-            "| Week | Rides | Total TSS | Total Hours | Total Distance |"
-        )
-        lines.append(
-            "|------|-------|-----------|-------------|----------------|"
-        )
+        lines.append("| Week | Rides | Total TSS | Total Hours | Total Distance |")
+        lines.append("|------|-------|-----------|-------------|----------------|")
         for ws in weekly_stats[-4:]:
             lines.append(
                 f"| {ws['week_label']} | {ws['ride_count']} | "
-                f"{ws['total_tss']:.0f} | "
-                f"{ws['total_hours']:.1f}h | "
+                f"{ws['total_tss']:.0f} | {ws['total_hours']:.1f}h | "
                 f"{ws['total_distance_km']:.0f}km |"
             )
     else:
@@ -179,7 +235,9 @@ def build_athlete_context(
             precip = f"{w.get('precipitation_mm', '?')}mm"
             wind = f"{w.get('wind_speed_ms', '?')}m/s"
             rec = "Indoor 🏠" if w.get("indoor") else "Outdoor 🌳"
-            lines.append(f"| {day_str} | {label} | {temp} | {precip} | {wind} | {rec} |")
+            lines.append(
+                f"| {day_str} | {label} | {temp} | {precip} | {wind} | {rec} |"
+            )
         lines.append("")
 
     # ── Already Scheduled ──
@@ -200,14 +258,7 @@ def build_athlete_context(
 def _summarize_weekly_training(
     activities: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
-    """Summarize activities by ISO week for training load overview.
-
-    Args:
-        activities: List of activity dicts
-
-    Returns:
-        List of dicts with weekly summary per ISO week
-    """
+    """Summarize activities by ISO week for training load overview."""
     from collections import defaultdict
     import datetime
 
@@ -247,211 +298,63 @@ def _summarize_weekly_training(
     return result
 
 
-def build_recommendation_prompt(
-    week_start: date,
-    athlete_context: str,
-) -> List[Dict[str, str]]:
-    """Build the full LLM prompt messages.
+# ── Agent initialisation (lazy, with OpenCode provider) ──
 
-    Args:
-        week_start: Monday of the target week
-        athlete_context: Context string from build_athlete_context()
-
-    Returns:
-        List of message dicts for the chat API
-    """
-    week_end = week_start + timedelta(days=6)
-
-    user_prompt = f"""Plan a training week from {week_start} to {week_end} for this athlete.
-
-{athlete_context}
-
-## TASK
-
-Design 3-6 workouts for this week based on the athlete's training load, recent activity history, and goals.
-
-Follow these principles:
-1. **Periodization**: Match workout intensity/duration to the training phase (base/build/peak/race/recovery)
-2. **Progressive overload**: Week-over-week progression in load where appropriate
-3. **Variety**: Don't repeat the same workout type on consecutive days. Mix endurance, intensity, and recovery
-4. **Recovery**: Schedule rest days or recovery rides between hard sessions
-5. **Weather awareness**: Use the weather forecast to decide indoor vs outdoor. Bad weather → suggest Zwift/indoor sessions with adjusted descriptions
-6. **Realism**: Workouts should be achievable given the athlete's current load and fatigue level
-7. **Specificity**: Write detailed, actionable descriptions. Include specific interval structures where appropriate
-
-{WORKOUT_LIBRARY_DESCRIPTION}
-
-## OUTPUT FORMAT
-
-Return ONLY a valid JSON array of workout objects (no markdown, no code fences):
-
-```json
-[
-  {{
-    "scheduled_date": "YYYY-MM-DD",
-    "workout_type": "endurance|tempo|threshold|vo2max|sprint|recovery|interval",
-    "title": "Catchy workout title",
-    "description": "Detailed workout description with specific intervals, durations, and targets",
-    "duration_minutes": 60,
-    "target_power_zone": "Zone description or power target",
-    "target_rpe": 3,
-    "is_indoor": false
-  }}
-]
-```
-
-Requirements for the output:
-- "scheduled_date" must be between {week_start} and {week_end}
-- "workout_type" must be one of: recovery, endurance, tempo, threshold, vo2max, sprint, interval
-- "target_rpe" must be an integer 1-10
-- "target_power_zone" should describe the power target in cycling terms
-- "is_indoor" should be true if weather data suggests indoor workout
-- Include 3-6 workouts total
-- Do NOT include any text outside the JSON array"""
-
-    return [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": user_prompt},
-    ]
+_agent: Optional[Agent] = None
+_client_initialised = False
 
 
-async def call_llm(
-    messages: List[Dict[str, str]],
-) -> Optional[str]:
-    """Call an OpenAI-compatible LLM API.
+def _ensure_agent() -> Optional[Agent]:
+    """Initialise the OpenAI client and agent if configured.
 
-    Args:
-        messages: List of chat messages
+    Uses the OpenCode provider endpoint (or any OpenAI-compatible API)
+    configured via LLM_API_BASE and LLM_API_KEY in .env.
 
     Returns:
-        Response text content, or None on failure
+        The agent instance, or None if LLM is not configured.
     """
+    global _agent, _client_initialised
+
+    if _client_initialised:
+        return _agent
+
     api_key = settings.llm_api_key
     api_base = settings.llm_api_base
 
     if not api_key or not api_base:
         logger.warning("LLM not configured — set LLM_API_KEY and LLM_API_BASE in .env")
+        _client_initialised = True
+        _agent = None
         return None
 
-    # Ensure base ends with /chat/completions
-    url = api_base.rstrip("/")
-    if not url.endswith("/chat/completions"):
-        url += "/chat/completions"
+    # Configure the OpenAI client with the provider's endpoint
+    client = AsyncOpenAI(
+        api_key=api_key,
+        base_url=api_base,
+    )
 
-    payload = {
-        "model": settings.llm_model,
-        "messages": messages,
-        "max_tokens": settings.llm_max_tokens,
-        "temperature": 0.7,
-        "response_format": {"type": "json_object"},
-    }
+    # Set as the default client for the Agents SDK
+    set_default_openai_client(client)
+    # Disable tracing (no OpenAI trace API needed for custom endpoints)
+    set_tracing_disabled(disabled=True)
 
-    try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.post(
-                url,
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                json=payload,
-            )
-            response.raise_for_status()
-            data = response.json()
-            content = data["choices"][0]["message"]["content"]
-            return content
-    except httpx.HTTPStatusError as e:
-        logger.error(f"LLM API HTTP error: {e.response.status_code} - {e.response.text[:200]}")
-        return None
-    except httpx.TimeoutException:
-        logger.error("LLM API timeout after 60s")
-        return None
-    except Exception as e:
-        logger.error(f"LLM API call failed: {e}")
-        return None
+    # Create the agent with structured output via Pydantic model
+    _agent = Agent(
+        name="Cycling Coach",
+        instructions=SYSTEM_PROMPT,
+        model=settings.llm_model,
+        output_type=WeeklyWorkoutPlan,
+    )
+
+    _client_initialised = True
+    logger.info(
+        f"Agent SDK initialised: model={settings.llm_model}, "
+        f"base_url={api_base}"
+    )
+    return _agent
 
 
-def parse_llm_response(response_text: Optional[str]) -> Optional[List[Dict[str, Any]]]:
-    """Parse the LLM response into a list of workout dicts.
-
-    Tries multiple parsing strategies:
-    1. Direct JSON parse of the response
-    2. Extract JSON from markdown code blocks
-    3. Try to find any JSON array in the text
-
-    Args:
-        response_text: Raw text from the LLM
-
-    Returns:
-        List of workout dicts, or None if parsing fails
-    """
-    import re
-
-    if not response_text:
-        return None
-
-    strategies = [
-        # Strategy 1: Direct JSON parse
-        lambda t: json.loads(t),
-        # Strategy 2: JSON inside code fences
-        lambda t: json.loads(
-            re.search(
-                r"```(?:json)?\s*\n?(.*?)\n?```", t, re.DOTALL
-            ).group(1)
-        )
-        if re.search(r"```(?:json)?\s*\n?(.*?)\n?```", t, re.DOTALL)
-        else None,
-        # Strategy 3: Find JSON array in text
-        lambda t: json.loads(
-            re.search(r"(\[[\s\S]*\])", t).group(1)
-        )
-        if re.search(r"(\[[\s\S]*\])", t)
-        else None,
-    ]
-
-    for strategy in strategies:
-        try:
-            result = strategy(response_text)
-            if isinstance(result, list):
-                return result
-            # Also handle if the response is wrapped in {"workouts": [...]}
-            if isinstance(result, dict):
-                for key in ("workouts", "recommendations", "plan", "schedule"):
-                    if key in result and isinstance(result[key], list):
-                        return result[key]
-        except (json.JSONDecodeError, AttributeError, TypeError):
-            continue
-
-    logger.error(f"Failed to parse LLM response: {response_text[:300]}")
-    return None
-
-
-def validate_workout(workout: Dict[str, Any]) -> bool:
-    """Validate a parsed workout dict has all required fields.
-
-    Args:
-        workout: Parsed workout dict
-
-    Returns:
-        True if valid, False otherwise
-    """
-    required = ["scheduled_date", "workout_type", "title"]
-    valid_types = {
-        "recovery", "endurance", "tempo", "threshold",
-        "vo2max", "sprint", "interval",
-    }
-
-    for field in required:
-        if field not in workout or not workout[field]:
-            logger.warning(f"Workout missing required field: {field}")
-            return False
-
-    wtype = workout.get("workout_type", "")
-    if wtype not in valid_types:
-        logger.warning(f"Invalid workout_type: {wtype}")
-        return False
-
-    return True
+# ── Public API ──
 
 
 async def generate_llm_plan(
@@ -463,10 +366,10 @@ async def generate_llm_plan(
     week_start: date,
     weather_forecasts: Optional[Dict[str, Dict]] = None,
 ) -> Optional[List[Dict[str, Any]]]:
-    """Generate a weekly training plan using the LLM.
+    """Generate a weekly training plan using the agent.
 
-    This is the main entry point. Gathers context, calls the LLM,
-    and returns structured workout recommendations.
+    Uses the OpenAI Agents SDK with the configured provider (OpenCode, OpenAI, etc.)
+    to produce structured workout recommendations.
 
     Args:
         user_id: The user's ID
@@ -478,10 +381,16 @@ async def generate_llm_plan(
         weather_forecasts: Weather forecast per day
 
     Returns:
-        List of workout dicts, or None if LLM fails
+        List of workout dicts (same format as the rule-based engine),
+        or None if the agent is not configured or fails.
     """
-    # Build context
-    athlete_context = build_athlete_context(
+    # Initialise the agent (lazy, once)
+    agent = _ensure_agent()
+    if agent is None:
+        return None
+
+    # Build athlete context
+    athlete_context = _build_athlete_context(
         user_profile=user_profile,
         training_metrics=training_metrics,
         recent_activities=recent_activities,
@@ -489,53 +398,60 @@ async def generate_llm_plan(
         weather_forecasts=weather_forecasts,
     )
 
-    # Build prompt
-    messages = build_recommendation_prompt(
-        week_start=week_start,
-        athlete_context=athlete_context,
+    # Build the user input with the task description
+    week_end = week_start + timedelta(days=6)
+    user_input = (
+        f"Plan a training week from {week_start} to {week_end} for this athlete.\n\n"
+        f"{athlete_context}\n\n"
+        f"Design 3-6 workouts for this week. Output them as a WeeklyWorkoutPlan."
     )
 
     logger.info(
-        "Calling LLM for workout recommendations "
+        "Running agent for workout recommendations "
         f"(model={settings.llm_model}, "
         f"activities={len(recent_activities)}, "
-        f"weeks_ahead=1)"
+        f"provider={'configured' if settings.llm_api_base else 'not configured'})"
     )
 
-    # Call LLM
-    response_text = await call_llm(messages)
-    if not response_text:
-        logger.warning("LLM returned no response — falling back")
+    try:
+        # Run the agent — the Agents SDK handles structured output parsing
+        result = await Runner.run(
+            agent,
+            user_input,
+        )
+
+        # The structured output is a WeeklyWorkoutPlan
+        plan = result.final_output
+        if not isinstance(plan, WeeklyWorkoutPlan):
+            logger.warning(
+                f"Agent returned unexpected output type: {type(plan).__name__}"
+            )
+            return None
+
+        if not plan.workouts:
+            logger.warning("Agent returned empty workout list")
+            return None
+
+        # Convert to the standard dict format expected by the endpoint
+        validated = []
+        for w in plan.workouts:
+            validated.append({
+                "user_id": user_id,
+                "scheduled_date": w.scheduled_date,
+                "workout_type": w.workout_type,
+                "title": w.title,
+                "description": w.description or "",
+                "duration_minutes": w.duration_minutes or 60,
+                "target_power_zone": w.target_power_zone or "",
+                "target_rpe": w.target_rpe,
+                "status": "suggested",
+                "source": "recommendation",
+                "is_indoor": w.is_indoor,
+            })
+
+        logger.info(f"Agent generated {len(validated)} workouts")
+        return validated
+
+    except Exception as e:
+        logger.error(f"Agent run failed: {e}")
         return None
-
-    # Parse response
-    workouts = parse_llm_response(response_text)
-    if not workouts:
-        logger.warning("Failed to parse LLM response — falling back")
-        return None
-
-    # Validate and normalize
-    validated = []
-    for w in workouts:
-        if not validate_workout(w):
-            continue
-        validated.append({
-            "user_id": user_id,
-            "scheduled_date": w["scheduled_date"],
-            "workout_type": w["workout_type"],
-            "title": w["title"],
-            "description": w.get("description", ""),
-            "duration_minutes": w.get("duration_minutes", 60),
-            "target_power_zone": w.get("target_power_zone", ""),
-            "target_rpe": w.get("target_rpe"),
-            "status": "suggested",
-            "source": "recommendation",
-            "is_indoor": w.get("is_indoor", False),
-        })
-
-    if not validated:
-        logger.warning("No valid workouts after parsing LLM response")
-        return None
-
-    logger.info(f"LLM generated {len(validated)} workouts")
-    return validated
