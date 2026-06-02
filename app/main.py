@@ -20,6 +20,7 @@ from app.database import init_db, SessionLocal
 from app.routers import strava, workouts, dashboard, user, auth, analytics
 from app.routers import weather as weather_router
 from app.routers import recovery
+from app.routers import intervals as intervals_router
 from app.services.metrics_compute import compute_all_users_metrics
 from app.auth import optional_current_user, get_current_user
 from app.models import User
@@ -79,6 +80,7 @@ app.include_router(analytics.router, prefix="/api")
 app.include_router(auth.router, prefix="/api")
 app.include_router(weather_router.router, prefix="/api")
 app.include_router(recovery.router, prefix="/api")
+app.include_router(intervals_router.router, prefix="/api")
 
 
 # ── Web UI Routes ──

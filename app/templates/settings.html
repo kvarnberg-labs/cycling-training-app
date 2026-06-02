@@ -126,6 +126,52 @@
             </template>
         </div>
 
+        <!-- Intervals.icu Connection -->
+        <div class="card mb-4">
+            <h2 class="text-lg font-semibold mb-4">
+                <span class="text-cyan-400">&#x1F4CA;</span> Intervals.icu Connection
+            </h2>
+            <div class="space-y-4">
+                <p class="text-xs text-slate-400">
+                    <a href="https://intervals.icu" target="_blank" class="text-cyan-400 underline">Intervals.icu</a>
+                    provides advanced training analytics. Connect your API key to sync activities, 
+                    power curves, and training metrics automatically.
+                </p>
+
+                <!-- Connection Status -->
+                <div x-show="intervalsChecking" class="text-sm text-slate-400">Checking connection...</div>
+                <div x-show="!intervalsChecking && intervalsConnected" class="text-sm text-emerald-400 mb-2">
+                    &#x2714; Connected as <span x-text="intervalsAthlete"></span>
+                </div>
+                <div x-show="!intervalsChecking && intervalsError" class="text-sm text-red-400 mb-2" x-text="intervalsError"></div>
+
+                <!-- API Key Input -->
+                <div>
+                    <label class="block text-sm font-medium text-slate-300 mb-1">API Key</label>
+                    <div class="flex gap-2">
+                        <input type="password" x-model="intervalsApiKey" placeholder="Paste your Intervals.icu API key" class="flex-1">
+                        <button @click="checkIntervalsConnection()" class="btn btn-primary">Connect</button>
+                    </div>
+                    <p class="text-xs text-slate-500 mt-1">
+                        Get your API key from <a href="https://intervals.icu/settings" target="_blank" class="text-cyan-400 underline">Intervals.icu Settings</a>
+                    </p>
+                </div>
+
+                <!-- Sync (visible when connected) -->
+                <div x-show="intervalsConnected" class="pt-2 border-t border-slate-700/50">
+                    <div class="flex gap-2 items-center">
+                        <button @click="syncIntervals()" class="btn btn-primary" :disabled="intervalsSyncing" x-text="intervalsSyncing ? 'Syncing...' : 'Sync Activities'"></button>
+                        <span x-show="intervalsSyncResult" class="text-sm text-slate-400" x-text="intervalsSyncResult"></span>
+                    </div>
+                </div>
+
+                <!-- Imported data summary -->
+                <div x-show="intervalsActivityCount > 0" class="text-xs text-slate-500">
+                    <span x-text="intervalsActivityCount"></span> activities synced from Intervals.icu
+                </div>
+            </div>
+        </div>
+
         <!-- Manual Workout Log -->
         <div class="card mb-4">
             <h2 class="text-lg font-semibold mb-4">Log a Workout</h2>
@@ -185,6 +231,15 @@
                 log: { title: '', date: '', duration: 60, type: 'endurance', distance: 0, notes: '' },
                 logging: false,
                 logResult: '',
+                // Intervals.icu
+                intervalsApiKey: '',
+                intervalsChecking: false,
+                intervalsConnected: false,
+                intervalsAthlete: '',
+                intervalsError: '',
+                intervalsSyncing: false,
+                intervalsSyncResult: '',
+                intervalsActivityCount: 0,
                 async init() {
                     try {
                         const res = await fetch('/api/user/');
@@ -231,6 +286,43 @@
                         this.syncResult = 'Synced ' + data.synced + ' activities!';
                     } catch(e) { this.syncResult = 'Sync failed'; }
                     this.syncing = false;
+                },
+                async checkIntervalsConnection() {
+                    this.intervalsChecking = true;
+                    this.intervalsError = '';
+                    this.intervalsConnected = false;
+                    try {
+                        // Send the API key to the backend for this session
+                        await fetch('/api/intervals/update-settings?api_key=' + encodeURIComponent(this.intervalsApiKey), { method: 'POST' });
+                        const res = await fetch('/api/intervals/status');
+                        if (res.ok) {
+                            const data = await res.json();
+                            if (data.connected) {
+                                this.intervalsConnected = true;
+                                this.intervalsAthlete = data.athlete_name || 'Connected';
+                                this.intervalsError = '';
+                            } else {
+                                this.intervalsError = data.message || 'Connection failed';
+                            }
+                        }
+                    } catch(e) { this.intervalsError = 'Connection failed: ' + e.message; }
+                    this.intervalsChecking = false;
+                },
+                async syncIntervals() {
+                    this.intervalsSyncing = true;
+                    this.intervalsSyncResult = '';
+                    try {
+                        const res = await fetch('/api/intervals/sync?days_back=90', { method: 'POST' });
+                        if (res.ok) {
+                            const data = await res.json();
+                            this.intervalsSyncResult = 'Synced ' + data.synced + ' activities!';
+                            this.intervalsActivityCount += data.synced || 0;
+                        } else {
+                            const err = await res.text();
+                            this.intervalsSyncResult = 'Sync failed: ' + err.slice(0, 100);
+                        }
+                    } catch(e) { this.intervalsSyncResult = 'Sync failed'; }
+                    this.intervalsSyncing = false;
                 },
                 async logWorkout() {
                     this.logging = true;

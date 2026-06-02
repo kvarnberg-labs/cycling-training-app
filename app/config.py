@@ -33,6 +33,11 @@ class Settings(BaseSettings):
     llm_model: str = "gpt-4o-mini"  # Model to use for recommendations
     llm_max_tokens: int = 4096
 
+    # Intervals.icu
+    intervals_api_key: str = ""
+    intervals_api_base: str = "https://intervals.icu/api/v1"
+    intervals_athlete_id: str = ""
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
