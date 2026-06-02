@@ -1,17 +1,19 @@
 """Workouts router — CRUD for planned and logged workouts."""
 
 from datetime import date, timedelta
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 
 from app.database import get_db
-from app.models import User, Workout, WorkoutStatus
+from app.models import User, Workout, WorkoutStatus, StravaActivity
 from app.schemas import WorkoutCreate, WorkoutOut, WorkoutUpdate
 from app.auth import get_current_user
 from app.services.recommendation_engine import generate_weekly_plan
+from app.services.llm_recommender import generate_llm_plan
+from app.config import settings
 import logging
 
 logger = logging.getLogger(__name__)
@@ -132,7 +134,11 @@ async def generate_week(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Generate workout recommendations for a week."""
+    """Generate workout recommendations for a week.
+
+    Uses the LLM recommender if configured (LLM_API_KEY + LLM_API_BASE in .env),
+    otherwise falls back to the rule-based recommendation engine.
+    """
     if not week_start:
         today = date.today()
         week_start = today - timedelta(days=today.weekday())
@@ -151,6 +157,7 @@ async def generate_week(
     ctl = latest_metrics.ctl if latest_metrics else 0.0
     atl = latest_metrics.atl if latest_metrics else 0.0
     tsb = latest_metrics.tsb if latest_metrics else 0.0
+    training_metrics = {"ctl": ctl, "atl": atl, "tsb": tsb}
 
     # Get recent workouts (last 30 days for workout type analysis)
     thirty_days_ago = date.today() - timedelta(days=30)
@@ -164,6 +171,23 @@ async def generate_week(
         .all()
     )
 
+    # Get recent Strava activities (last 30 days)
+    recent_strava = (
+        db.query(StravaActivity)
+        .filter(
+            StravaActivity.user_id == current_user.id,
+            StravaActivity.start_date >= thirty_days_ago,
+        )
+        .order_by(desc(StravaActivity.start_date))
+        .all()
+    )
+    # Convert to dicts for the LLM recommender
+    recent_strava_dicts = []
+    for act in recent_strava:
+        a = act.__dict__.copy()
+        a.pop("_sa_instance_state", None)
+        recent_strava_dicts.append(a)
+
     # Get existing scheduled workouts for this week
     existing = (
         db.query(Workout)
@@ -174,8 +198,23 @@ async def generate_week(
         )
         .all()
     )
+    existing_dicts = []
+    for w in existing:
+        d = w.__dict__.copy()
+        d.pop("_sa_instance_state", None)
+        existing_dicts.append(d)
 
-    # Generate recommendations
+    # Build user profile dict
+    user_profile = {
+        "ftp": current_user.ftp or 200,
+        "weight_kg": current_user.weight_kg or 75.0,
+        "training_goal": current_user.training_goal.value if hasattr(current_user.training_goal, "value") else str(current_user.training_goal or "base"),
+        "resting_hr": current_user.resting_hr or 60,
+        "max_hr": current_user.max_hr or 185,
+        "location_lat": current_user.location_lat,
+        "location_lon": current_user.location_lon,
+    }
+
     # Fetch weather if user has a location set
     weather_forecasts = None
     if current_user.location_lat and current_user.location_lon:
@@ -190,6 +229,10 @@ async def generate_week(
                         "symbol": f.symbol,
                         "icon": f.icon,
                         "label": f.label,
+                        "temp_min": f.temp_min,
+                        "temp_max": f.temp_max,
+                        "precipitation_mm": f.precipitation_mm,
+                        "wind_speed_ms": f.wind_speed_ms,
                         "indoor": f.is_indoor_suitable,
                         "outdoor": f.is_outdoor_suitable,
                     }
@@ -198,18 +241,41 @@ async def generate_week(
         except Exception as e:
             logger.warning(f"Could not fetch weather for recommendations: {e}")
 
-    recommendations = generate_weekly_plan(
-        user_id=current_user.id,
-        ctl=ctl,
-        atl=atl,
-        tsb=tsb,
-        goal=current_user.training_goal,
-        ftp=current_user.ftp or 200,
-        recent_workouts=recent_workouts,
-        existing_scheduled=existing,
-        week_start=week_start,
-        weather_forecasts=weather_forecasts,
-    )
+    # ── Try LLM Recommender (if configured) ──
+    llm_configured = bool(settings.llm_api_key and settings.llm_api_base)
+    recommendations = None
+
+    if llm_configured:
+        logger.info("LLM recommender is configured — attempting LLM-generated plan")
+        recommendations = await generate_llm_plan(
+            user_id=current_user.id,
+            user_profile=user_profile,
+            training_metrics=training_metrics,
+            recent_activities=recent_strava_dicts,
+            existing_scheduled=existing_dicts,
+            week_start=week_start,
+            weather_forecasts=weather_forecasts,
+        )
+        if recommendations:
+            logger.info(f"LLM generated {len(recommendations)} workouts")
+        else:
+            logger.warning("LLM recommender failed — falling back to rule-based engine")
+
+    # ── Fall back to rule-based engine ──
+    if not recommendations:
+        logger.info("Using rule-based recommendation engine")
+        recommendations = generate_weekly_plan(
+            user_id=current_user.id,
+            ctl=ctl,
+            atl=atl,
+            tsb=tsb,
+            goal=current_user.training_goal,
+            ftp=current_user.ftp or 200,
+            recent_workouts=recent_workouts,
+            existing_scheduled=existing,
+            week_start=week_start,
+            weather_forecasts=weather_forecasts,
+        )
 
     # Save to DB
     created_workouts = []

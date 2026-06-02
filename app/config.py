@@ -27,6 +27,12 @@ class Settings(BaseSettings):
     default_hr_rest: int = 60  # bpm
     default_hr_max: int = 185  # bpm
 
+    # LLM for recommendations
+    llm_api_key: str = ""
+    llm_api_base: str = ""  # OpenAI-compatible endpoint (e.g. https://api.openai.com/v1)
+    llm_model: str = "gpt-4o-mini"  # Model to use for recommendations
+    llm_max_tokens: int = 4096
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
