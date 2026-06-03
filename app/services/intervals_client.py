@@ -4,8 +4,8 @@ Full REST API client for Intervals.icu — a free training analytics platform
 that provides deep cycling/running/triathlon metrics including CTL/ATL/TSB,
 power curves, activity analysis, and training calendar management.
 
-Docs: https://intervals.icu (API docs behind login)
-Auth: API key (X-API-Key header) or OAuth 2.0
+Docs: https://intervals.icu/api/v1/docs
+Auth: HTTP Basic Auth with username='API_KEY' and password=<api_key>
 Base URL: https://intervals.icu/api/v1
 """
 
@@ -45,17 +45,16 @@ class IntervalsNotFoundError(IntervalsError):
 class IntervalsClient:
     """HTTP client for the Intervals.icu REST API.
 
-    Supports both API key and OAuth 2.0 authentication.
-    Provides methods for athletes, activities, training metrics,
-    power curve, workouts, and webhooks.
+    Uses HTTP Basic Auth with username='API_KEY' (not the athlete ID).
+    All athlete-scoped endpoints are under /athlete/{athlete_id}/.
 
     Usage:
-        client = IntervalsClient(api_key="...")
+        client = IntervalsClient(api_key="...", athlete_id="i12345")
         athlete = await client.get_athlete()
         activities = await client.get_activities(days_back=90)
     """
 
-    BASE_URL = "https://intervals.icu/api/v1"
+    API_BASE = "https://intervals.icu/api/v1"
     TIMEOUT = 30
 
     def __init__(
@@ -72,33 +71,33 @@ class IntervalsClient:
             athlete_id: Athlete ID for multi-athlete contexts.
         """
         self.api_key = api_key or settings.intervals_api_key
-        self.base_url = (base_url or settings.intervals_api_base).rstrip("/")
         self.athlete_id = athlete_id or settings.intervals_athlete_id
+
+        # Base URL for athlete-scoped endpoints
+        base = (base_url or settings.intervals_api_base or self.API_BASE).rstrip("/")
+        if self.athlete_id:
+            self.base_url = f"{base}/athlete/{self.athlete_id}"
+        else:
+            self.base_url = base
+
+        # Auth: HTTP Basic Auth with username='API_KEY' (per OpenAPI spec)
+        self._auth = httpx.BasicAuth("API_KEY", self.api_key) if self.api_key else None
 
         self._client = httpx.AsyncClient(
             base_url=self.base_url,
             timeout=self.TIMEOUT,
+            auth=self._auth,
             headers=self._build_headers(),
         )
 
-    def _build_headers(self) -> Dict[str, str]:
-        """Build auth headers for the API client.
-
-        Intervals.icu accepts:
-        - API key via X-API-Key header
-        - Or Bearer token via Authorization header
-
-        Returns:
-            Headers dict
-        """
-        headers = {
+    @staticmethod
+    def _build_headers() -> Dict[str, str]:
+        """Build standard headers (auth is handled by BasicAuth)."""
+        return {
             "Content-Type": "application/json",
             "Accept": "application/json",
             "User-Agent": "CycleTrain/1.0 (cycling-training-app)",
         }
-        if self.api_key:
-            headers["X-API-Key"] = self.api_key
-        return headers
 
     async def _request(
         self,
@@ -111,7 +110,7 @@ class IntervalsClient:
 
         Args:
             method: HTTP method (GET, POST, PUT, DELETE)
-            path: API endpoint path (e.g. /athlete)
+            path: API endpoint path (relative to base URL)
             params: Query parameters
             data: Request body for POST/PUT
 
@@ -178,7 +177,7 @@ class IntervalsClient:
         Returns:
             Athlete profile dict with name, FTP, weight, zones, etc.
         """
-        return await self._request("GET", "/athlete")
+        return await self._request("GET", "")
 
     async def update_athlete(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Update athlete profile (FTP, weight, zones, etc.).
@@ -189,7 +188,7 @@ class IntervalsClient:
         Returns:
             Updated athlete profile
         """
-        return await self._request("PUT", "/athlete", data=data)
+        return await self._request("PUT", "", data=data)
 
     # ── Activities ──
 
@@ -206,7 +205,7 @@ class IntervalsClient:
             days_back: How many days of history to fetch
             limit: Max activities per page
             offset: Pagination offset
-            sport: Filter by sport type (Cycling, Running, etc.)
+            sport: Filter by sport type (Ride, Run, etc.)
 
         Returns:
             List of activity dicts with power, HR, duration, etc.
@@ -263,7 +262,7 @@ class IntervalsClient:
         """Get Performance Management Chart data.
 
         Returns pre-computed CTL (fitness), ATL (fatigue), TSB (form)
-        for each day.
+        for each day via the athlete-summary endpoint.
 
         Args:
             days: Number of days of history
@@ -271,48 +270,54 @@ class IntervalsClient:
         Returns:
             List of daily metrics: {date, ctl, atl, tsb, total_tss, ...}
         """
-        params = {"days": days}
-        return await self._request("GET", "/training", params=params)
+        today = date.today()
+        oldest = today - timedelta(days=days)
+        params = {
+            "oldest": oldest.isoformat(),
+            "newest": today.isoformat(),
+        }
+        return await self._request("GET", "/athlete-summary", params=params)
 
     async def get_training_load(self) -> Dict[str, Any]:
-        """Get current training load summary.
-
-        Returns current CTL, ATL, TSB with interpretations.
+        """Get current training load summary from recent athlete data.
 
         Returns:
             Dict with current_ctl, current_atl, current_tsb, etc.
         """
-        return await self._request("GET", "/training/load")
+        metrics = await self.get_training_metrics(days=7)
+        if metrics:
+            latest = metrics[-1]
+            return {
+                "current_ctl": latest.get("fitness", 0),
+                "current_atl": latest.get("fatigue", 0),
+                "current_tsb": latest.get("form", 0),
+            }
+        return {"current_ctl": 0, "current_atl": 0, "current_tsb": 0}
 
     # ── Power Curve ──
 
     async def get_power_curve(
         self,
         days: int = 365,
-        model: str = "best",
+        activity_type: str = "Ride",
     ) -> Dict[str, Any]:
         """Get power-duration curve data.
 
-        Intervals.icu supports multiple models:
-        - "best": Best actual efforts across all durations
-        - "3p": Morton's 3-parameter critical power model
-        - "monod": Monod & Scherrer model
-
         Args:
             days: How far back to compute
-            model: Which model to use (best, 3p, monod)
+            activity_type: Sport type (Ride, Run, etc.)
 
         Returns:
             Power curve data with durations and corresponding watts
         """
-        params = {"days": days, "model": model}
-        return await self._request("GET", "/power-curve", params=params)
+        params = {"type": activity_type}
+        return await self._request("GET", "/power-curves", params=params)
 
     async def get_power_curve_trend(
         self,
         months: int = 12,
     ) -> List[Dict[str, Any]]:
-        """Get power curve progression over time (monthly snapshots).
+        """Get power curve progression over time.
 
         Args:
             months: How many months of trend data
@@ -320,45 +325,60 @@ class IntervalsClient:
         Returns:
             List of monthly power curve snapshots
         """
-        params = {"months": months}
-        return await self._request("GET", "/power-curve/trend", params=params)
+        today = date.today()
+        oldest = today - timedelta(days=months * 30)
+        params = {
+            "type": "Ride",
+            "oldest": oldest.isoformat(),
+            "newest": today.isoformat(),
+        }
+        return await self._request("GET", "/activity-power-curves", params=params)
 
     # ── Zones ──
 
     async def get_zones(self) -> Dict[str, Any]:
-        """Get the athlete's power and HR zones.
+        """Get the athlete's power and HR zones from profile.
 
         Returns:
             Zone definitions for power, heart rate, and pace
         """
-        return await self._request("GET", "/zones")
+        athlete = await self.get_athlete()
+        return {
+            "power_zones": athlete.get("icu_power_zones"),
+            "hr_zones": athlete.get("icu_hr_zones"),
+            "ftp": athlete.get("icu_ftp"),
+            "lthr": athlete.get("lthr"),
+            "max_hr": athlete.get("athlete_max_hr"),
+            "resting_hr": athlete.get("icu_resting_hr"),
+            "weight": athlete.get("weight"),
+        }
 
     async def update_zones(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Update training zones.
+        """Update training zones via athlete profile update.
 
         Args:
             data: Zone definitions to update
 
         Returns:
-            Updated zones
+            Updated athlete profile
         """
-        return await self._request("PUT", "/zones", data=data)
+        return await self._request("PUT", "", data=data)
 
-    # ── Workouts / Calendar ──
+    # ── Events / Calendar ──
 
-    async def get_workouts(
+    async def get_events(
         self,
         start_date: date,
         end_date: Optional[date] = None,
     ) -> List[Dict[str, Any]]:
-        """Get planned workouts from the training calendar.
+        """Get calendar events (planned workouts, notes, etc.).
 
         Args:
             start_date: Start of date range
             end_date: End of date range (defaults to start_date + 7 days)
 
         Returns:
-            List of workout dicts
+            List of event dicts
         """
         if not end_date:
             end_date = start_date + timedelta(days=7)
@@ -366,72 +386,9 @@ class IntervalsClient:
             "oldest": start_date.isoformat(),
             "newest": end_date.isoformat(),
         }
-        return await self._request("GET", "/workouts", params=params)
+        return await self._request("GET", "/events", params=params)
 
-    async def create_workout(self, workout: Dict[str, Any]) -> Dict[str, Any]:
-        """Create a planned workout on the calendar.
-
-        Args:
-            workout: Workout dict with date, title, description, duration, etc.
-
-        Returns:
-            Created workout
-        """
-        return await self._request("POST", "/workouts", data=workout)
-
-    async def update_workout(
-        self,
-        workout_id: int,
-        data: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        """Update an existing workout.
-
-        Args:
-            workout_id: Workout ID
-            data: Fields to update
-
-        Returns:
-            Updated workout
-        """
-        return await self._request("PUT", f"/workouts/{workout_id}", data=data)
-
-    async def delete_workout(self, workout_id: int):
-        """Delete a workout from the calendar.
-
-        Args:
-            workout_id: Workout ID
-        """
-        await self._request("DELETE", f"/workouts/{workout_id}")
-
-    # ── Wellbeing / Health ──
-
-    async def get_wellbeing(
-        self,
-        days: int = 30,
-    ) -> List[Dict[str, Any]]:
-        """Get wellbeing data (HRV, sleep, RHR, etc.).
-
-        Args:
-            days: How many days of data
-
-        Returns:
-            List of daily wellbeing records
-        """
-        params = {"days": days}
-        return await self._request("GET", "/wellbeing", params=params)
-
-    async def update_wellbeing(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Log wellbeing data for today.
-
-        Args:
-            data: Wellbeing metrics (hrv, sleep_hours, resting_hr, etc.)
-
-        Returns:
-            Created/updated wellbeing record
-        """
-        return await self._request("POST", "/wellbeing", data=data)
-
-    # ── Webhooks ──
+    # ── Webhooks (may not be under athlete prefix) ──
 
     async def register_webhook(
         self,
@@ -447,10 +404,7 @@ class IntervalsClient:
         Returns:
             Webhook registration details
         """
-        data = {"callbackUrl": callback_url}
-        if events:
-            data["events"] = events
-        return await self._request("POST", "/webhooks", data=data)
+        raise NotImplementedError("Webhook API not available in current Intervals.icu API version")
 
     async def list_webhooks(self) -> List[Dict[str, Any]]:
         """List registered webhooks.
@@ -458,7 +412,7 @@ class IntervalsClient:
         Returns:
             List of webhook registrations
         """
-        return await self._request("GET", "/webhooks")
+        raise NotImplementedError("Webhook API not available in current Intervals.icu API version")
 
     async def delete_webhook(self, webhook_id: int):
         """Remove a webhook registration.
@@ -466,7 +420,13 @@ class IntervalsClient:
         Args:
             webhook_id: Webhook ID
         """
-        await self._request("DELETE", f"/webhooks/{webhook_id}")
+        raise NotImplementedError("Webhook API not available in current Intervals.icu API version")
+
+    # ── Athlete Profile (detailed) ──
+
+    async def get_profile(self) -> Dict[str, Any]:
+        """Get extended athlete profile with shared folders and custom items."""
+        return await self._request("GET", "/profile")
 
 
 # ── Convenience ──
@@ -514,15 +474,19 @@ def activity_to_dict(activity: Dict[str, Any]) -> Dict[str, Any]:
             activity.get("total_elevation_gain")
             or activity.get("elevationGain", 0)
         ),
-        "average_watts": activity.get("average_watts") or activity.get("avgPower", 0),
-        "max_watts": activity.get("max_watts") or activity.get("maxPower", 0),
-        "weighted_average_watts": (
-            activity.get("weighted_average_watts")
-            or activity.get("normalizedPower", 0)
-        ),
+        "average_watts": activity.get("average_watts")
+            or activity.get("avgPower")
+            or activity.get("icu_average_watts"),
+        "max_watts": activity.get("max_watts")
+            or activity.get("maxPower")
+            or activity.get("icu_max_watts"),
+        "weighted_average_watts": activity.get("weighted_average_watts")
+            or activity.get("normalizedPower")
+            or activity.get("icu_weighted_avg_watts"),
         "average_heartrate": (
             activity.get("average_heartrate")
-            or activity.get("avgHeartRate", 0)
+            or activity.get("avgHeartRate")
+            or activity.get("average_heartrate", 0)
         ),
         "max_heartrate": activity.get("max_heartrate") or activity.get("maxHeartRate", 0),
         "average_cadence": activity.get("average_cadence") or activity.get("avgCadence", 0),
@@ -541,6 +505,8 @@ def activity_to_dict(activity: Dict[str, Any]) -> Dict[str, Any]:
 def training_metrics_to_dict(metrics: Dict[str, Any]) -> Dict[str, Any]:
     """Convert Intervals.icu training metrics to our format.
 
+    Maps athlete-summary response fields to our app's expected format.
+
     Args:
         metrics: Raw training metrics dict from Intervals.icu
 
@@ -549,19 +515,15 @@ def training_metrics_to_dict(metrics: Dict[str, Any]) -> Dict[str, Any]:
     """
     return {
         "date": metrics.get("date"),
-        "ctl": metrics.get("ctl", metrics.get("fitness", 0)),
-        "atl": metrics.get("atl", metrics.get("fatigue", 0)),
-        "tsb": metrics.get("tsb", metrics.get("form", 0)),
-        "total_tss": metrics.get("total_tss", metrics.get("tss", 0)),
+        "ctl": metrics.get("fitness", 0),
+        "atl": metrics.get("fatigue", 0),
+        "tsb": metrics.get("form", 0),
+        "total_tss": metrics.get("training_load", 0),
         "total_duration_minutes": (
-            metrics.get("total_duration_minutes")
-            or (metrics.get("movingTime", 0) / 60)
-            or 0
+            (metrics.get("moving_time", 0) or metrics.get("time", 0)) / 60
         ),
         "total_distance_km": (
-            metrics.get("total_distance_km")
-            or (metrics.get("distance", 0) / 1000)
-            or 0
+            metrics.get("distance", 0) / 1000
         ),
-        "ride_count": metrics.get("ride_count", metrics.get("activityCount", 0)),
+        "ride_count": metrics.get("count", 0),
     }

@@ -5,7 +5,7 @@ text files or config.
 """
 
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -86,13 +86,23 @@ async def get_status(
     try:
         client = await get_client_for_user(current_user)
         athlete = await client.get_athlete()
+
+        # Extract FTP from sportSettings (it's nested, not top-level)
+        ftp = None
+        sport_settings = athlete.get("sportSettings", [])
+        for ss in sport_settings:
+            if ss.get("types") and "Ride" in ss.get("types", []):
+                ftp = ss.get("ftp")
+                break
+        if ftp is None and sport_settings:
+            ftp = sport_settings[0].get("ftp")
+
         return {
             "connected": True,
             "athlete_name": athlete.get("name", "Unknown"),
             "athlete_id": athlete.get("id"),
-            "ftp": athlete.get("ftp"),
-            "weight_kg": athlete.get("weight"),
-            "sports": athlete.get("sports", []),
+            "ftp": ftp,
+            "weight_kg": athlete.get("icu_weight"),
             "message": "Connected to Intervals.icu",
         }
     except IntervalsAuthError as e:
@@ -148,11 +158,25 @@ async def sync_activities(
     ftp = current_user.ftp or 200
 
     for act in activities:
-        intervals_id = act.get("id")
+        # Use strava_id (integer) if available, otherwise hash the intervals string ID
+        intervals_id_str = act.get("id", "")
+        intervals_id = act.get("strava_id") or abs(hash(intervals_id_str))
         if not intervals_id or intervals_id in existing_ids:
             continue
 
         mapped = activity_to_dict(act)
+
+        # Parse start_date from ISO string to datetime
+        parsed_start = None
+        raw_start = mapped.get("start_date")
+        if raw_start:
+            try:
+                parsed_start = datetime.fromisoformat(raw_start.replace("Z", "+00:00"))
+            except (ValueError, TypeError):
+                pass
+
+        if not parsed_start:
+            continue  # Skip activities without a valid start date
 
         # Create StravaActivity record (reusing the model for intervals data too)
         activity = StravaActivity(
@@ -160,7 +184,7 @@ async def sync_activities(
             strava_id=intervals_id,  # Reuse strava_id for intervals.icu ID
             name=mapped.get("name", "Untitled"),
             activity_type=mapped.get("activity_type", "Ride"),
-            start_date=mapped.get("start_date"),
+            start_date=parsed_start,
             timezone=mapped.get("timezone"),
             elapsed_time=mapped.get("elapsed_time"),
             moving_time=mapped.get("moving_time"),
