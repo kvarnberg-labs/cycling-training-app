@@ -26,7 +26,7 @@ spec:
         fsGroup: 1001
       containers:
         - name: app
-          image: forgejo.lan/kvarnberg/cycling-training-app:latest
+          image: ghcr.io/kvarnberg-labs/cycling-training-app:latest
           imagePullPolicy: Always
           ports:
             - containerPort: 8000
