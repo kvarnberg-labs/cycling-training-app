@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Optional
 
 from fastapi import FastAPI, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi import Depends
@@ -159,10 +159,20 @@ async def insights_view(
 
 @app.exception_handler(404)
 async def not_found(request: Request, exc):
-    return templates.TemplateResponse("index.html", {
-        "request": request,
-        "title": settings.app_name,
-    }, status_code=404)
+    return HTMLResponse(
+        content=f"<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'>"
+        f"<meta name='viewport' content='width=device-width, initial-scale=1.0'>"
+        f"<title>{settings.app_name} — Not Found</title>"
+        f"<script src='https://cdn.tailwindcss.com'></script>"
+        f"<link href='https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap' rel='stylesheet'>"
+        f"<style>*{{font-family:'Inter',sans-serif;}}body{{background:#0f172a;color:#e2e8f0;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:2rem;text-align:center;}}</style>"
+        f"</head><body><div><h1 class='text-6xl font-bold text-cyan-400 mb-4'>404</h1>"
+        f"<p class='text-xl text-slate-400 mb-6'>Page not found</p>"
+        f"<a href='/' class='px-5 py-2.5 bg-cyan-600 text-white rounded-lg font-semibold hover:bg-cyan-500 transition'>Go Home</a>"
+        f"</div></body></html>",
+        status_code=404,
+        media_type="text/html",
+    )
 
 
 # ── Health / Info ──

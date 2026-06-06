@@ -135,13 +135,58 @@ async def sync_activities(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Sync activities from Intervals.icu into our local database."""
+    """Sync activities from Intervals.icu into our local database.
+    Also auto-updates the user's FTP and weight from the athlete profile.
+    """
     client = await get_client_for_user(current_user)
 
     try:
         activities = await client.get_activities(days_back=days_back, limit=200)
     except IntervalsError as e:
         raise HTTPException(status_code=502, detail=str(e))
+
+    # Auto-update user profile (FTP, weight) from Intervals.icu athlete data
+    try:
+        athlete = await client.get_athlete()
+        updates = {}
+
+        # Extract FTP from sportSettings (nested)
+        sport_settings = athlete.get("sportSettings", [])
+        for ss in sport_settings:
+            if ss.get("types") and "Ride" in ss.get("types", []):
+                ftp_from_intervals = ss.get("ftp")
+                if ftp_from_intervals and ftp_from_intervals != current_user.ftp:
+                    updates["ftp"] = ftp_from_intervals
+                    logger.info(f"Updating FTP: {current_user.ftp} -> {ftp_from_intervals}")
+                break
+
+        # Extract weight
+        weight = athlete.get("icu_weight") or athlete.get("weight")
+        if weight and weight != current_user.weight_kg:
+            updates["weight_kg"] = weight
+            logger.info(f"Updating weight: {current_user.weight_kg} -> {weight}")
+
+        # Extract resting HR
+        resting_hr = athlete.get("icu_resting_hr")
+        if resting_hr and resting_hr != current_user.resting_hr:
+            updates["resting_hr"] = resting_hr
+            logger.info(f"Updating resting HR: {current_user.resting_hr} -> {resting_hr}")
+
+        # Extract max HR
+        max_hr = athlete.get("athlete_max_hr")
+        if max_hr and max_hr != current_user.max_hr:
+            updates["max_hr"] = max_hr
+            logger.info(f"Updating max HR: {current_user.max_hr} -> {max_hr}")
+
+        if updates:
+            for key, value in updates.items():
+                setattr(current_user, key, value)
+            db.commit()
+            logger.info(f"Auto-updated user {current_user.id} profile from Intervals.icu: {updates}")
+
+    except Exception as e:
+        logger.warning(f"Could not auto-update profile from Intervals.icu: {e}")
+        # Non-fatal — continue with sync
 
     if not activities:
         return {"synced": 0, "message": "No activities found in Intervals.icu"}
