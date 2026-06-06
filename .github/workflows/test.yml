@@ -43,12 +43,6 @@ jobs:
         env:
           DATABASE_URL: sqlite:///./test.db
           SECRET_KEY: ci-test-secret-key
+          PYTHONPATH: .
         run: |
           pytest tests/ -v --cov=app --cov-report=term-missing --cov-report=xml --cov-fail-under=50 -x
-
-      - name: Upload coverage report
-        uses: codecov/codecov-action@v4
-        if: always()
-        with:
-          file: ./coverage.xml
-          fail_ci_if_error: false
