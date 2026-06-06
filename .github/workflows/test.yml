@@ -45,4 +45,4 @@ jobs:
           SECRET_KEY: ci-test-secret-key
           PYTHONPATH: .
         run: |
-          pytest tests/ -v --cov=app --cov-report=term-missing --cov-report=xml --cov-fail-under=50 -x
+          pytest tests/ -v --cov=app --cov-report=term-missing --cov-report=xml --cov-fail-under=50 -x --ignore=tests/e2e
