@@ -1,7 +1,7 @@
 """Integration tests for the Cycling Training App API endpoints.
 
 Uses FastAPI TestClient with an in-memory SQLite database.
-Tests cover auth, workouts, dashboard, strava, and user endpoints.
+Tests cover auth, workouts, dashboard, and user endpoints.
 """
 
 import pytest
@@ -321,10 +321,10 @@ class TestDashboardEndpoints:
         data = response.json()
         assert len(data["suggested_workouts"]) == 3
 
-    def test_dashboard_strava_status(self, client, auth_headers, test_user):
+    def test_dashboard_intervals_status(self, client, auth_headers, test_user):
         response = client.get("/api/dashboard/", headers=auth_headers)
         data = response.json()
-        assert data["strava_connected"] is False
+        assert data["intervals_connected"] is False
         assert data["training_goal"] == "base"
 
 
@@ -443,5 +443,5 @@ class TestHealthEndpoint:
         response = client.get("/api/info")
         assert response.status_code == status.HTTP_200_OK
         data = response.json()
-        assert data["strava_configured"] is False
+        assert data["app_name"] == "Cycling Training App"
         assert isinstance(data["debug"], bool)

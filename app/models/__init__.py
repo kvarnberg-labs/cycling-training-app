@@ -43,12 +43,6 @@ class User(Base):
     password_hash = Column(String(255), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
-    # Strava integration
-    strava_athlete_id = Column(Integer, unique=True, nullable=True)
-    strava_access_token = Column(String(255), nullable=True)
-    strava_refresh_token = Column(String(255), nullable=True)
-    strava_token_expires_at = Column(Integer, nullable=True)
-
     # User profile for training
     ftp = Column(Integer, default=200)  # Functional Threshold Power (watts)
     weight_kg = Column(Float, default=75.0)

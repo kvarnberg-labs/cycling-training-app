@@ -22,8 +22,6 @@ from app.schemas import (
 from app.auth import get_current_user, optional_current_user
 from app.services.training_load import pmc_series
 from app.services.power_curve import compute_power_curve, get_power_curve_trend
-from app.services.intervals_client import get_client, IntervalsError
-from app.services.encryption import decrypt
 from app.config import settings
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
@@ -90,7 +88,6 @@ def get_dashboard(
         .all()
     )
 
-    strava_connected = current_user.strava_access_token is not None
     intervals_connected = bool(
         current_user.intervals_api_key_encrypted
         or current_user.intervals_athlete_id
@@ -106,7 +103,6 @@ def get_dashboard(
         suggested_workouts=suggested,
         training_goal=current_user.training_goal.value if hasattr(current_user.training_goal, 'value') else str(current_user.training_goal),
         ftp=current_user.ftp or 200,
-        strava_connected=strava_connected,
         intervals_connected=intervals_connected,
     )
 

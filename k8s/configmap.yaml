@@ -8,6 +8,5 @@ data:
   DATABASE_URL: "sqlite:///./data/cycling_trainer.db"
   APP_NAME: "Cycling Training App"
   BASE_URL: "https://cycling.kvarnberg.labs"
-  STRAVA_REDIRECT_URI: "https://cycling.kvarnberg.labs/api/strava/callback"
   LLM_API_BASE: "https://opencode.ai/zen/go/v1"
   LLM_MODEL: "deepseek-v4-flash"

@@ -37,7 +37,6 @@ class UserOut(BaseModel):
     resting_hr: int
     max_hr: int
     training_goal: str
-    strava_athlete_id: Optional[int] = None
     is_active: bool
     created_at: datetime
     location_lat: Optional[float] = None
@@ -154,7 +153,6 @@ class DashboardResponse(BaseModel):
     suggested_workouts: List[WorkoutOut] = []
     training_goal: str = "base"
     ftp: int = 200
-    strava_connected: bool = False
     intervals_connected: bool = False
 
 
@@ -182,17 +180,6 @@ class WeeklyCalendarResponse(BaseModel):
     week_start: str
     week_end: str
     days: List[WeeklyCalendarDay]
-
-
-# ── Strava Auth ──
-
-class StravaAuthUrl(BaseModel):
-    auth_url: str
-
-
-class StravaTokenResponse(BaseModel):
-    success: bool
-    message: str
 
 
 # ── Auth ──

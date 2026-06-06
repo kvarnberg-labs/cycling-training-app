@@ -22,8 +22,7 @@
         .badge { display: inline-block; padding: 0.15rem 0.6rem; border-radius: 9999px; font-size: 0.75rem; }
     </style>
 </head>
-<body x-data="settingsApp()" x-init="init()" class="min-h-screen"
-      data-strava-auth-url="/api/strava/auth-url">
+<body x-data="settingsApp()" x-init="init()" class="min-h-screen">
     <nav class="border-b border-slate-700/50 bg-slate-900/80 backdrop-blur sticky top-0 z-50">
         <div class="max-w-6xl mx-auto px-4 h-14 flex items-center justify-between">
             <a href="/" class="text-lg font-bold tracking-tight"><span class="text-cyan-400">&#x1F6B2;</span> CycleTrain</a>
@@ -108,22 +107,6 @@
                 <button @click="saveSettings()" class="btn btn-primary" x-text="saving ? 'Saving...' : 'Save Settings'"></button>
                 <div x-show="saved" class="text-sm text-emerald-400 mt-2">Settings saved!</div>
             </div>
-        </div>
-
-        <!-- Strava Connection -->
-        <div class="card mb-4">
-            <h2 class="text-lg font-semibold mb-4">Strava Connection</h2>
-            <div x-show="stravaConnected" class="text-sm text-emerald-400 mb-3">&#x2714; Connected to Strava</div>
-            <div x-show="!stravaConnected" class="text-sm text-slate-400 mb-3">Not connected. Connect your Strava account to import rides automatically.</div>
-            <template x-if="!stravaConnected && stravaAuthUrl">
-                <a :href="stravaAuthUrl" class="btn btn-primary inline-block">Connect Strava</a>
-            </template>
-            <template x-if="stravaConnected">
-                <div class="flex gap-2">
-                    <button @click="syncStrava()" class="btn btn-primary" :disabled="syncing" x-text="syncing ? 'Syncing...' : 'Sync Activities'"></button>
-                    <span x-show="syncResult" class="text-sm text-slate-400 py-2" x-text="syncResult"></span>
-                </div>
-            </template>
         </div>
 
         <!-- Intervals.icu Connection -->
@@ -235,12 +218,8 @@
         function settingsApp() {
             return {
                 user: { name: '', ftp: 200, weight_kg: 75, resting_hr: 60, max_hr: 185, training_goal: 'base', location_lat: null, location_lon: null, weather_preference: 'auto' },
-                stravaConnected: false,
-                stravaAuthUrl: document.body.dataset.stravaAuthUrl || '#',
                 saving: false,
                 saved: false,
-                syncing: false,
-                syncResult: '',
                 log: { title: '', date: '', duration: 60, type: 'endurance', distance: 0, notes: '' },
                 logging: false,
                 logResult: '',
@@ -271,7 +250,6 @@
                                 location_lon: data.location_lon || null,
                                 weather_preference: data.weather_preference || 'auto',
                             };
-                            this.stravaConnected = data.strava_athlete_id != null;
                         }
                     } catch(e) {}
                     // Check for existing encrypted Intervals keys
@@ -300,16 +278,6 @@
                         }
                     } catch(e) {}
                     this.saving = false;
-                },
-                async syncStrava() {
-                    this.syncing = true;
-                    this.syncResult = '';
-                    try {
-                        const res = await fetch('/api/strava/sync?days_back=90', { method: 'POST' });
-                        const data = await res.json();
-                        this.syncResult = 'Synced ' + data.synced + ' activities!';
-                    } catch(e) { this.syncResult = 'Sync failed'; }
-                    this.syncing = false;
                 },
                 async saveIntervalsKeys() {
                     this.intervalsChecking = true;

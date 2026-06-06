@@ -49,8 +49,7 @@
     </style>
 </head>
 <body x-data="app()" x-init="init()" class="min-h-screen"
-      data-strava-configured="{{ 'true' if strava_client_id else 'false' }}"
-      data-strava-auth-url="/api/strava/auth-url">
+      data-strava-configured="{{ 'true' if strava_client_id else 'false' }}">
     <!-- Nav -->
     <nav class="border-b border-slate-700/50 bg-slate-900/80 backdrop-blur sticky top-0 z-50">
         <div class="max-w-6xl mx-auto px-4 h-14 flex items-center justify-between">
@@ -64,18 +63,6 @@
                     <a href="/pmc" class="px-3 py-1.5 rounded-lg text-sm font-medium" :class="page === 'pmc' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'">PMC</a>
                     <a href="/settings" class="px-3 py-1.5 rounded-lg text-sm font-medium" :class="page === 'settings' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'">Settings</a>
                 </div>
-            </div>
-            <div class="flex items-center gap-3">
-                <template x-if="!stravaConnected">
-                    <a :href="stravaAuthUrl" class="btn btn-primary text-xs px-3 py-1.5">
-                        + Connect Strava
-                    </a>
-                </template>
-                <template x-if="stravaConnected">
-                    <button @click="syncStrava()" class="btn btn-secondary text-xs px-3 py-1.5" :disabled="syncing">
-                        <span x-text="syncing ? 'Syncing...' : 'Sync Strava'"></span>
-                    </button>
-                </template>
             </div>
             <!-- Mobile nav -->
             <div class="sm:hidden flex gap-0.5">
@@ -142,13 +129,10 @@
 
         <!-- Data Source Badges -->
         <div class="flex gap-2 mb-4 justify-end">
-            <template x-if="dashboard.strava_connected">
-                <span class="inline-flex items-center gap-1 text-[10px] px-2 py-1 rounded-full bg-orange-900/30 text-orange-300 border border-orange-700/30">&#x1F4AA; Strava</span>
-            </template>
             <template x-if="dashboard.intervals_connected">
                 <span class="inline-flex items-center gap-1 text-[10px] px-2 py-1 rounded-full bg-cyan-900/30 text-cyan-300 border border-cyan-700/30">&#x1F4CA; Intervals.icu</span>
             </template>
-            <template x-if="!dashboard.strava_connected && !dashboard.intervals_connected">
+            <template x-if="!dashboard.intervals_connected">
                 <span class="inline-flex items-center gap-1 text-[10px] px-2 py-1 rounded-full bg-slate-800 text-slate-500 border border-slate-700">No data source</span>
             </template>
         </div>
@@ -327,9 +311,6 @@
         function app() {
             return {
                 page: 'dashboard',
-                stravaConnected: false,
-                stravaAuthUrl: document.body.dataset.stravaAuthUrl || '#',
-                syncing: false,
                 generating: false,
                 openCheckin: false,
                 checkinSaving: false,
@@ -397,7 +378,7 @@
                         }
                     } catch(e) {}
                     try {
-                        const res = await fetch('/api/strava/activities?limit=5', { headers });
+                        const res = await fetch('/api/intervals/activities?limit=5', { headers });
                         if (res.ok) this.recentActivities = await res.json();
                     } catch(e) {}
                 },
@@ -410,10 +391,8 @@
                         this_week_tss: data.this_week_tss || 0,
                         recent_activities_count: data.recent_activities_count || 0,
                         training_goal: data.training_goal || 'base',
-                        strava_connected: data.strava_connected || false,
                         intervals_connected: data.intervals_connected || false,
                     };
-                    this.stravaConnected = data.strava_connected || false;
                     this.workouts = (data.suggested_workouts || []).map(w => ({
                         ...w,
                         scheduled_date: w.scheduled_date || w.scheduled_date
@@ -432,17 +411,6 @@
                         localStorage.setItem('token', data.access_token);
                         return true;
                     } catch(e) { return false; }
-                },
-                async syncStrava() {
-                    this.syncing = true;
-                    const headers = { 'Authorization': 'Bearer ' + localStorage.getItem('access_token') };
-                    try {
-                        const res = await fetch('/api/strava/sync?days_back=90', { method: 'POST', headers });
-                        const data = await res.json();
-                        alert('Synced ' + data.synced + ' activities!');
-                        await this.loadDashboard();
-                    } catch(e) { alert('Sync failed'); }
-                    this.syncing = false;
                 },
                 async generateWeek() {
                     this.generating = true;

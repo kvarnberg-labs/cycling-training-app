@@ -13,11 +13,6 @@ class Settings(BaseSettings):
     # Database
     database_url: str = "sqlite:///./cycling_trainer.db"
 
-    # Strava API
-    strava_client_id: str = ""
-    strava_client_secret: str = ""
-    strava_redirect_uri: str = "http://localhost:8000/auth/strava/callback"
-
     # Base URL for the app
     base_url: str = "http://localhost:8000"
 

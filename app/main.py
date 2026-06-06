@@ -17,7 +17,7 @@ from sqlalchemy import func
 
 from app.config import settings
 from app.database import init_db, SessionLocal
-from app.routers import strava, workouts, dashboard, user, auth, analytics
+from app.routers import workouts, dashboard, user, auth, analytics
 from app.routers import weather as weather_router
 from app.routers import recovery
 from app.routers import intervals as intervals_router
@@ -42,13 +42,6 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Could not compute metrics on startup: {e}")
 
-    # Check if Strava is configured
-    if not settings.strava_client_id or not settings.strava_client_secret:
-        logger.warning(
-            "Strava API not configured! Set STRAVA_CLIENT_ID and STRAVA_CLIENT_SECRET "
-            "environment variables or in .env file."
-        )
-
     yield
     logger.info("Shutting down...")
 
@@ -72,7 +65,6 @@ templates_dir = os.path.join(os.path.dirname(__file__), "templates")
 templates = Jinja2Templates(directory=templates_dir)
 
 # Include API routers
-app.include_router(strava.router, prefix="/api")
 app.include_router(workouts.router, prefix="/api")
 app.include_router(dashboard.router, prefix="/api")
 app.include_router(user.router, prefix="/api")
@@ -96,8 +88,6 @@ async def index(
     return templates.TemplateResponse("index.html", {
         "request": request,
         "title": settings.app_name,
-        "strava_client_id": settings.strava_client_id,
-        "strava_redirect_uri": settings.strava_redirect_uri,
     })
 
 
@@ -188,6 +178,5 @@ def app_info():
     """Get app configuration info (no secrets)."""
     return {
         "app_name": settings.app_name,
-        "strava_configured": bool(settings.strava_client_id),
         "debug": settings.debug,
     }
