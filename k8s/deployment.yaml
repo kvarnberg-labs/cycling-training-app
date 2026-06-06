@@ -6,7 +6,9 @@ metadata:
   labels:
     app: cycling-training-app
 spec:
-  replicas: 2
+  replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: cycling-training-app
@@ -15,6 +17,8 @@ spec:
       labels:
         app: cycling-training-app
     spec:
+      imagePullSecrets:
+        - name: forgejo-registry-secret
       securityContext:
         runAsNonRoot: true
         runAsUser: 1001
@@ -22,7 +26,7 @@ spec:
         fsGroup: 1001
       containers:
         - name: app
-          image: ghcr.io/kvarnberg-labs/cycling-training-app:latest
+          image: forgejo.lan/kvarnberg/cycling-training-app:latest
           imagePullPolicy: Always
           ports:
             - containerPort: 8000
@@ -32,10 +36,16 @@ spec:
                 name: cycling-training-app-config
             - secretRef:
                 name: cycling-training-app-secrets
+          env:
+            - name: LLM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: cycling-training-app-secrets
+                  key: LLM_API_KEY
           resources:
             requests:
-              memory: "256Mi"
-              cpu: "250m"
+              memory: "128Mi"
+              cpu: "100m"
             limits:
               memory: "512Mi"
               cpu: "500m"

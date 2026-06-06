@@ -4,14 +4,8 @@ metadata:
   name: cycling-training-app
   namespace: cycling-training-app
   annotations:
-    nginx.ingress.kubernetes.io/rewrite-target: /
-    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    traefik.ingress.kubernetes.io/router.entrypoints: web
 spec:
-  ingressClassName: nginx
-  tls:
-    - hosts:
-        - cycling.kvarnberg.labs
-      secretName: cycling-training-app-tls
   rules:
     - host: cycling.kvarnberg.labs
       http:
@@ -22,4 +16,4 @@ spec:
               service:
                 name: cycling-training-app
                 port:
-                  number: 80
+                  number: 8000
