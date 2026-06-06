@@ -140,6 +140,19 @@
             </div>
         </div>
 
+        <!-- Data Source Badges -->
+        <div class="flex gap-2 mb-4 justify-end">
+            <template x-if="dashboard.strava_connected">
+                <span class="inline-flex items-center gap-1 text-[10px] px-2 py-1 rounded-full bg-orange-900/30 text-orange-300 border border-orange-700/30">&#x1F4AA; Strava</span>
+            </template>
+            <template x-if="dashboard.intervals_connected">
+                <span class="inline-flex items-center gap-1 text-[10px] px-2 py-1 rounded-full bg-cyan-900/30 text-cyan-300 border border-cyan-700/30">&#x1F4CA; Intervals.icu</span>
+            </template>
+            <template x-if="!dashboard.strava_connected && !dashboard.intervals_connected">
+                <span class="inline-flex items-center gap-1 text-[10px] px-2 py-1 rounded-full bg-slate-800 text-slate-500 border border-slate-700">No data source</span>
+            </template>
+        </div>
+
         <!-- Main grid: Workouts + Activity -->
         <div class="grid lg:grid-cols-3 gap-4 mb-6">
             <!-- Suggested Workouts (takes 2 cols) -->
@@ -347,6 +360,18 @@
                 async init() {
                     await this.loadDashboard();
                     await this.loadReadiness();
+                    // Auto-sync Intervals.icu in background if keys are stored
+                    this.autoSyncIntervals();
+                },
+                async autoSyncIntervals() {
+                    try {
+                        const keyRes = await fetch('/api/intervals/key-status');
+                        if (!keyRes.ok) return;
+                        const keyData = await keyRes.json();
+                        if (!keyData.has_key) return;
+                        // Trigger sync silently (no user-facing feedback)
+                        await fetch('/api/intervals/sync?days_back=14', { method: 'POST' });
+                    } catch(e) { /* silent — non-critical */ }
                 },
                 async loadDashboard() {
                     const headers = this.getHeaders();
@@ -385,6 +410,8 @@
                         this_week_tss: data.this_week_tss || 0,
                         recent_activities_count: data.recent_activities_count || 0,
                         training_goal: data.training_goal || 'base',
+                        strava_connected: data.strava_connected || false,
+                        intervals_connected: data.intervals_connected || false,
                     };
                     this.stravaConnected = data.strava_connected || false;
                     this.workouts = (data.suggested_workouts || []).map(w => ({

@@ -77,7 +77,9 @@
         <div class="card mt-4">
             <div class="flex items-center justify-between mb-3">
                 <h2 class="text-lg font-semibold">Power Curve</h2>
-                <div class="text-xs text-slate-400">
+                <div class="flex items-center gap-2">
+                    <span x-show="powerCurve.source === 'intervals.icu'" class="text-[10px] px-1.5 py-0.5 rounded-full bg-cyan-900/30 text-cyan-300 border border-cyan-700/30">Intervals.icu</span>
+                    <div class="text-xs text-slate-400">
                     <span x-show="powerCurve.activity_count > 0" x-text="'Based on ' + powerCurve.activity_count + ' activities'"></span>
                     <span x-show="powerCurve.estimated_ftp > 0" x-text="' | Estimated FTP: ' + powerCurve.estimated_ftp + 'W'"></span>
                 </div>
@@ -174,6 +176,25 @@
                 },
                 async loadPowerCurve() {
                     try {
+                        // Try Intervals.icu power curve first (more accurate)
+                        const intervalsRes = await fetch('/api/intervals/power-curve', { headers: this.getHeaders() });
+                        if (intervalsRes.ok) {
+                            const data = await intervalsRes.json();
+                            // Intervals.icu returns curve differently — normalise
+                            const curve = this._normaliseIntervalsCurve(data.curve || {});
+                            if (curve.length > 0) {
+                                this.powerCurve.curve = curve;
+                                this.powerCurve.hasData = true;
+                                this.powerCurve.trend = this._normaliseIntervalsTrend(data.trend || []);
+                                this.powerCurve.source = 'intervals.icu';
+                                this.$nextTick(() => this.renderPowerCurve());
+                                return;
+                            }
+                        }
+                    } catch(e) { /* fall through to local */ }
+
+                    // Fall back to local Strava-based power curve
+                    try {
                         const res = await fetch('/api/dashboard/power-curve', { headers: this.getHeaders() });
                         if (!res.ok) return;
                         const data = await res.json();
@@ -183,10 +204,46 @@
                         this.powerCurve.dominant_zone = data.dominant_zone || 'insufficient_data';
                         this.powerCurve.trend = data.trend || [];
                         this.powerCurve.hasData = this.powerCurve.curve.length > 0;
+                        this.powerCurve.source = 'strava';
                         this.$nextTick(() => this.renderPowerCurve());
                     } catch (e) {
                         console.error('Failed to load power curve:', e);
                     }
+                },
+                _normaliseIntervalsCurve(curveData) {
+                    // Intervals.icu returns durations as keys, e.g. {"1": 786, "5": 620, ...}
+                    const durationLabels = {
+                        1: '1s', 5: '5s', 10: '10s', 30: '30s',
+                        60: '1m', 120: '2m', 300: '5m', 600: '10m',
+                        1200: '20m', 1800: '30m', 3600: '60m'
+                    };
+                    const zoneDurations = {
+                        1: 'neuromuscular', 5: 'neuromuscular', 10: 'anaerobic', 30: 'vo2max',
+                        60: 'threshold', 120: 'threshold', 300: 'tempo',
+                        600: 'tempo', 1200: 'endurance', 1800: 'endurance', 3600: 'endurance'
+                    };
+                    const ftp = this.powerCurve.estimated_ftp || 200;
+                    const result = [];
+                    for (const [dur, watts] of Object.entries(curveData)) {
+                        const d = parseInt(dur);
+                        if (!d || !watts) continue;
+                        const zone = zoneDurations[d] || 'no_data';
+                        result.push({
+                            label: durationLabels[d] || `${d}s`,
+                            duration_seconds: d,
+                            power_watts: watts,
+                            percent_of_ftp: Math.round((watts / ftp) * 100),
+                            zone: zone,
+                        });
+                    }
+                    return result.sort((a, b) => a.duration_seconds - b.duration_seconds);
+                },
+                _normaliseIntervalsTrend(trendData) {
+                    // Intervals.icu trend: [{date, month, ...}]
+                    return (trendData || []).map(t => ({
+                        date: t.date || t.month || '',
+                        estimated_ftp: t.estimated_ftp || t.ftp || 0,
+                    })).filter(t => t.date && t.estimated_ftp);
                 },
                 powerCurveZoneColor(zone) {
                     const colors = {
@@ -583,11 +640,12 @@
                 ftpTrendChart: null,
                 powerCurve: {
                     curve: [],
-                    activity_count: 0,
+                    hasData: false,
                     estimated_ftp: 0,
+                    activity_count: 0,
                     dominant_zone: 'insufficient_data',
                     trend: [],
-                    hasData: false,
+                    source: 'strava',
                 },
             }
         }

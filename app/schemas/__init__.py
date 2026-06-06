@@ -155,6 +155,7 @@ class DashboardResponse(BaseModel):
     training_goal: str = "base"
     ftp: int = 200
     strava_connected: bool = False
+    intervals_connected: bool = False
 
 
 class PMCDataPoint(BaseModel):
