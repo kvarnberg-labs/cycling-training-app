@@ -95,7 +95,7 @@ def _activity_to_dict(act: Dict[str, Any]) -> Dict[str, Any]:
     # Extract PMC data that Intervals.icu sometimes includes per-activity
     fitness = act.get("icu_ctl") or 0
     fatigue = act.get("icu_atl") or 0
-    form = act.get("form") or (fatigue - fitness if fatigue and fitness else 0)
+    form = act.get("form") or (fitness - fatigue if fitness and fatigue else 0)
 
     # Better naming for Strava-limited activities
     name = act.get("name")
