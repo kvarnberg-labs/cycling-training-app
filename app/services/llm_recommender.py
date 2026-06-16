@@ -1,30 +1,29 @@
-"""LLM-powered workout recommender using the OpenAI Agents SDK.
+"""LLM-powered workout recommender — direct HTTP calls to any OpenAI-compatible API.
 
 Takes Strava activity data, training metrics, and user profile as input,
-constructs a rich context prompt, and uses an agent (via the OpenAI Agents SDK)
+constructs a rich context prompt, and calls an LLM (via OpenAI-compatible API)
 to generate structured weekly workout recommendations.
 
-Configured to work with any OpenAI-compatible provider (OpenCode, OpenAI, etc.)
-via LLM_API_KEY and LLM_API_BASE in .env.
+Configured via LLM_API_KEY and LLM_API_BASE in .env.
+Works with any OpenAI-compatible provider: OpenCode, OpenAI, Anthropic via proxy, etc.
 
-Falls back to the rule-based engine if the agent is not configured.
+Falls back to the rule-based engine if the LLM is not configured.
 """
 
+import json
 import logging
 from datetime import date, timedelta
 from typing import Any, Dict, List, Optional
 
+import httpx
 from pydantic import BaseModel, Field
-
-from openai import AsyncOpenAI
-from agents import Agent, Runner, set_default_openai_client, set_tracing_disabled
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
 
 
-# ── Agent output models (structured output via the Agents SDK) ──
+# ── Output models ──
 
 
 class WorkoutRecommendation(BaseModel):
@@ -65,7 +64,7 @@ class WorkoutRecommendation(BaseModel):
 
 
 class WeeklyWorkoutPlan(BaseModel):
-    """A weekly training plan with 3-6 recommended workouts."""
+    """A weekly training plan with recommended workouts."""
     workouts: List[WorkoutRecommendation] = Field(
         description="List of 3-6 workout recommendations for the week",
         min_length=1,
@@ -73,9 +72,9 @@ class WeeklyWorkoutPlan(BaseModel):
     )
 
 
-# ── Agent definition ──
+# ── System prompt ──
 
-SYSTEM_PROMPT = """You are an expert cycling coach and sports scientist, similar to TrainingPeaks but smarter. Your specialty is designing personalized weekly training plans based on an athlete's actual Strava ride data, training load metrics, and goals.
+SYSTEM_PROMPT = """You are an expert cycling coach and sports scientist, similar to TrainingPeaks but smarter. Your specialty is designing personalized weekly training plans based on an athlete's actual ride data, training load metrics, and goals.
 
 You have deep knowledge of:
 - Periodized training (base, build, peak, race, recovery phases)
@@ -103,7 +102,8 @@ Follow these principles when designing the plan:
 4. Recovery: Schedule rest days or recovery rides between hard sessions
 5. Weather awareness: Bad weather → suggest indoor/Zwift sessions
 6. Realism: Workouts must be achievable given the athlete's current load and fatigue
-7. Specificity: Write detailed, actionable descriptions with interval structures"""
+7. Specificity: Write detailed, actionable descriptions with interval structures
+8. Output ONLY valid JSON matching the requested schema — no extra text, markdown, or formatting"""
 
 
 # ── Context builder ──
@@ -126,7 +126,7 @@ def _build_athlete_context(
         weather_forecasts: Optional dict of {date: {weather_info}}
 
     Returns:
-        Formatted context string for the agent input
+        Formatted context string for the LLM input
     """
     lines = []
 
@@ -169,8 +169,8 @@ def _build_athlete_context(
         lines.append("- No training metrics available (new athlete)")
     lines.append("")
 
-    # ── Recent Strava Activities ──
-    lines.append("## RECENT STRAVA ACTIVITIES (Last 30 Days)")
+    # ── Recent Activities ──
+    lines.append("## RECENT ACTIVITIES (Last 30 Days)")
     if recent_activities:
         lines.append(f"Total rides synced: {len(recent_activities)}")
         lines.append("")
@@ -217,7 +217,7 @@ def _build_athlete_context(
                 f"{ws['total_distance_km']:.0f}km |"
             )
     else:
-        lines.append("- No recent Strava activities synced")
+        lines.append("- No recent activities synced")
     lines.append("")
 
     # ── Weather Forecast ──
@@ -298,63 +298,172 @@ def _summarize_weekly_training(
     return result
 
 
-# ── Agent initialisation (lazy, with OpenCode provider) ──
+# ── LLM call ──
 
-_agent: Optional[Agent] = None
-_client_initialised = False
+_initialised = False
+
+JSON_SCHEMA = WeeklyWorkoutPlan.model_json_schema()
 
 
-def _ensure_agent() -> Optional[Agent]:
-    """Initialise the OpenAI client and agent if configured.
+def _call_llm(system_prompt: str, user_prompt: str) -> Optional[str]:
+    """Call the LLM via OpenAI-compatible API and return raw response text.
 
-    Uses the OpenCode provider endpoint (or any OpenAI-compatible API)
-    configured via LLM_API_BASE and LLM_API_KEY in .env.
+    Args:
+        system_prompt: System-level instructions for the LLM
+        user_prompt: User input with athlete context and task
 
     Returns:
-        The agent instance, or None if LLM is not configured.
+        Raw response text from the LLM, or None on failure
     """
-    global _agent, _client_initialised
-
-    if _client_initialised:
-        return _agent
+    global _initialised
 
     api_key = settings.llm_api_key
     api_base = settings.llm_api_base
 
     if not api_key or not api_base:
-        logger.warning("LLM not configured — set LLM_API_KEY and LLM_API_BASE in .env")
-        _client_initialised = True
-        _agent = None
+        if not _initialised:
+            logger.warning("LLM not configured — set LLM_API_KEY and LLM_API_BASE in .env")
+            _initialised = True
         return None
 
-    # Configure the OpenAI client with the provider's endpoint
-    client = AsyncOpenAI(
-        api_key=api_key,
-        base_url=api_base,
-    )
+    # Use chat completions endpoint
+    url = f"{api_base.rstrip('/')}/chat/completions"
 
-    # Set as the default client for the Agents SDK
-    set_default_openai_client(client)
-    # Disable tracing (no OpenAI trace API needed for custom endpoints)
-    set_tracing_disabled(disabled=True)
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
 
-    # Create the agent with structured output via Pydantic model
-    _agent = Agent(
-        name="Cycling Coach",
-        instructions=SYSTEM_PROMPT,
-        model=settings.llm_model,
-        output_type=WeeklyWorkoutPlan,
-    )
+    payload = {
+        "model": settings.llm_model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "max_tokens": settings.llm_max_tokens,
+        "temperature": 0.7,
+        # Request JSON response format if supported by the provider
+        "response_format": {"type": "json_object"},
+    }
 
-    _client_initialised = True
     logger.info(
-        f"Agent SDK initialised: model={settings.llm_model}, "
-        f"base_url={api_base}"
+        "Calling LLM for workout recommendations "
+        f"(model={settings.llm_model}, base={api_base})"
     )
-    return _agent
+
+    try:
+        with httpx.Client(timeout=60) as client:
+            resp = client.post(url, headers=headers, json=payload)
+
+        if resp.status_code != 200:
+            logger.error(
+                f"LLM API error {resp.status_code}: {resp.text[:500]}"
+            )
+            return None
+
+        data = resp.json()
+        choices = data.get("choices", [])
+        if not choices:
+            logger.error(f"LLM response has no choices: {data.get('error', 'unknown')}")
+            return None
+
+        content = choices[0].get("message", {}).get("content", "")
+        if not content:
+            logger.error("LLM response has empty message content")
+            return None
+
+        return content
+
+    except httpx.TimeoutException:
+        logger.error("LLM API call timed out after 60s")
+        return None
+    except httpx.RequestError as e:
+        logger.error(f"LLM API request failed: {e}")
+        return None
+    except json.JSONDecodeError as e:
+        logger.error(f"LLM API returned non-JSON response: {e}")
+        return None
 
 
 # ── Public API ──
+
+
+def _parse_and_validate_plan(raw_text: str) -> Optional[WeeklyWorkoutPlan]:
+    """Parse JSON response text and validate against the output model.
+
+    Performs progressive validation:
+    1. Strip markdown fences if present
+    2. Parse as JSON
+    3. Validate with Pydantic model
+
+    Args:
+        raw_text: Raw response text from the LLM
+
+    Returns:
+        Validated WeeklyWorkoutPlan, or None on failure
+    """
+    text = raw_text.strip()
+
+    # Strip markdown JSON code fences if present
+    if text.startswith("```"):
+        # Remove opening ```json or ``` and closing ```
+        lines = text.splitlines()
+        if lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse LLM response as JSON: {e}")
+        logger.debug(f"Raw response: {raw_text[:500]}")
+        return None
+
+    plan_data: Any = None
+
+    # LLM might wrap in a top-level key like "workouts" or return a flat dict
+    if isinstance(data, list):
+        # Response is a flat list of workouts — wrap it
+        plan_data = {"workouts": data}
+    elif "workouts" in data:
+        # Top-level is already the plan
+        plan_data = data
+    else:
+        # Try to find a key that looks like a plan container
+        candidates = ["plan", "weekly_plan", "training_plan", "schedule", "recommendation"]
+        found = False
+        for key in candidates:
+            if key in data and isinstance(data[key], dict) and "workouts" in data[key]:
+                plan_data = data[key]
+                found = True
+                break
+        if not found:
+            # Days-of-week format: {monday: {...}, tuesday: {...}, ...}
+            day_names = {"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"}
+            if isinstance(data, dict):
+                data_keys_lower = {k.lower() for k in data.keys() if isinstance(data.get(k), dict)}
+                if data_keys_lower & day_names:
+                    workouts = [v for k, v in data.items() if isinstance(v, dict)]
+                    plan_data = {"workouts": workouts}
+                else:
+                    # Fall through — use the raw data as-is and let validation fail gracefully
+                    plan_data = data
+            else:
+                plan_data = data
+
+    if plan_data is None:
+        logger.error(f"Could not interpret LLM response structure. Keys: {list(data.keys())}")
+        logger.debug(f"Raw data: {json.dumps(data, indent=2)[:500]}")
+        return None
+
+    try:
+        return WeeklyWorkoutPlan(**plan_data)
+    except Exception as e:
+        logger.error(f"Pydantic validation failed: {e}")
+        logger.debug(f"Plan data: {json.dumps(plan_data, indent=2)[:500]}")
+        return None
 
 
 async def generate_llm_plan(
@@ -366,27 +475,34 @@ async def generate_llm_plan(
     week_start: date,
     weather_forecasts: Optional[Dict[str, Dict]] = None,
 ) -> Optional[List[Dict[str, Any]]]:
-    """Generate a weekly training plan using the agent.
+    """Generate a weekly training plan using the LLM.
 
-    Uses the OpenAI Agents SDK with the configured provider (OpenCode, OpenAI, etc.)
-    to produce structured workout recommendations.
+    Builds an athlete context from provided data, calls the LLM via
+    OpenAI-compatible API, validates the structured JSON response,
+    and returns workout dicts.
 
     Args:
         user_id: The user's ID
         user_profile: User profile dict
         training_metrics: Latest CTL/ATL/TSB
-        recent_activities: Recent Strava activities
+        recent_activities: Recent activities
         existing_scheduled: Already scheduled workouts for this week
         week_start: Monday of target week
         weather_forecasts: Weather forecast per day
 
     Returns:
         List of workout dicts (same format as the rule-based engine),
-        or None if the agent is not configured or fails.
+        or None if the LLM is not configured or fails.
     """
-    # Initialise the agent (lazy, once)
-    agent = _ensure_agent()
-    if agent is None:
+    global _initialised
+
+    api_key = settings.llm_api_key
+    api_base = settings.llm_api_base
+
+    if not api_key or not api_base:
+        if not _initialised:
+            logger.warning("LLM not configured — skipping LLM plan generation")
+            _initialised = True
         return None
 
     # Build athlete context
@@ -398,60 +514,56 @@ async def generate_llm_plan(
         weather_forecasts=weather_forecasts,
     )
 
-    # Build the user input with the task description
+    # Build the user input
     week_end = week_start + timedelta(days=6)
-    user_input = (
+    user_prompt = (
         f"Plan a training week from {week_start} to {week_end} for this athlete.\n\n"
         f"{athlete_context}\n\n"
-        f"Design 3-6 workouts for this week. Output them as a WeeklyWorkoutPlan."
+        f"Design 3-6 workouts for this week. "
+        f"Output ONLY valid JSON matching the WeeklyWorkoutPlan schema:\n"
+        f"{{'workouts': [{{'scheduled_date': 'YYYY-MM-DD', 'workout_type': '...', "
+        f"'title': '...', 'description': '...', 'duration_minutes': 60, "
+        f"'target_power_zone': '...', 'target_rpe': 5, 'is_indoor': false}}]}}"
     )
 
     logger.info(
-        "Running agent for workout recommendations "
+        "Generating LLM workout recommendations "
         f"(model={settings.llm_model}, "
-        f"activities={len(recent_activities)}, "
-        f"provider={'configured' if settings.llm_api_base else 'not configured'})"
+        f"activities={len(recent_activities)})"
     )
 
-    try:
-        # Run the agent — the Agents SDK handles structured output parsing
-        result = await Runner.run(
-            agent,
-            user_input,
-        )
-
-        # The structured output is a WeeklyWorkoutPlan
-        plan = result.final_output
-        if not isinstance(plan, WeeklyWorkoutPlan):
-            logger.warning(
-                f"Agent returned unexpected output type: {type(plan).__name__}"
-            )
-            return None
-
-        if not plan.workouts:
-            logger.warning("Agent returned empty workout list")
-            return None
-
-        # Convert to the standard dict format expected by the endpoint
-        validated = []
-        for w in plan.workouts:
-            validated.append({
-                "user_id": user_id,
-                "scheduled_date": w.scheduled_date,
-                "workout_type": w.workout_type,
-                "title": w.title,
-                "description": w.description or "",
-                "duration_minutes": w.duration_minutes or 60,
-                "target_power_zone": w.target_power_zone or "",
-                "target_rpe": w.target_rpe,
-                "status": "suggested",
-                "source": "recommendation",
-                "is_indoor": w.is_indoor,
-            })
-
-        logger.info(f"Agent generated {len(validated)} workouts")
-        return validated
-
-    except Exception as e:
-        logger.error(f"Agent run failed: {e}")
+    # Call the LLM
+    raw_response = _call_llm(SYSTEM_PROMPT, user_prompt)
+    if raw_response is None:
+        logger.warning("LLM call failed — no response")
         return None
+
+    # Parse and validate
+    plan = _parse_and_validate_plan(raw_response)
+    if plan is None:
+        logger.warning("LLM response failed validation")
+        return None
+
+    if not plan.workouts:
+        logger.warning("LLM returned empty workout list")
+        return None
+
+    # Convert to the standard dict format expected by the endpoint
+    validated = []
+    for w in plan.workouts:
+        validated.append({
+            "user_id": user_id,
+            "scheduled_date": w.scheduled_date,
+            "workout_type": w.workout_type,
+            "title": w.title,
+            "description": w.description or "",
+            "duration_minutes": w.duration_minutes or 60,
+            "target_power_zone": w.target_power_zone or "",
+            "target_rpe": w.target_rpe,
+            "status": "suggested",
+            "source": "recommendation",
+            "is_indoor": w.is_indoor,
+        })
+
+    logger.info(f"LLM generated {len(validated)} workouts")
+    return validated

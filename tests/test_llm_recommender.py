@@ -34,8 +34,8 @@ class TestBuildAthleteContext:
         assert "ATHLETE PROFILE" in context
         assert "250" in context
         assert "base" in context
-        assert "RECENT STRAVA ACTIVITIES" in context
-        assert "No recent Strava activities synced" in context
+        assert "RECENT ACTIVITIES" in context
+        assert "No recent activities synced" in context
 
     def test_context_with_training_metrics(self):
         """Should include CTL/ATL/TSB and interpretation."""
@@ -52,7 +52,7 @@ class TestBuildAthleteContext:
         assert "Peaking" in context
 
     def test_context_with_strava_activities(self):
-        """Should format recent Strava activities as a table."""
+        """Should format recent activities as a table."""
         activities = [
             {
                 "start_date": "2026-05-28T10:00:00Z",
@@ -326,10 +326,9 @@ class TestGenerateLLMPlan:
         settings.llm_api_key = ""
         settings.llm_api_base = ""
 
-        # Reset the lazy-initialised agent
+        # Reset the lazy-initialised flag
         import app.services.llm_recommender as mod
-        mod._client_initialised = False
-        mod._agent = None
+        mod._initialised = False
 
         result = None
         import asyncio
@@ -346,8 +345,7 @@ class TestGenerateLLMPlan:
             # Restore
             settings.llm_api_key = original_key
             settings.llm_api_base = original_base
-            mod._client_initialised = False
-            mod._agent = None
+            mod._initialised = False
 
         assert result is None
 
@@ -358,10 +356,9 @@ class TestGenerateLLMPlan:
         if not api_key or not api_base:
             pytest.skip("No LLM configured in .env — skipping integration test")
 
-        # Reset lazy init so the agent gets created with real config
+        # Reset lazy init so the module starts fresh
         import app.services.llm_recommender as mod
-        mod._client_initialised = False
-        mod._agent = None
+        mod._initialised = False
 
         import asyncio
         result = asyncio.run(generate_llm_plan(
