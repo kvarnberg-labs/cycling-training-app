@@ -38,6 +38,3 @@ python3 -m app.user_manager register <discord_id> \
   --athlete-id <athlete_id>
 ```
 
-Notable users:
-- Joey (`joey0624`, athlete `i344591`, FTP 284W)
-- Lars (`lars3698`, athlete `i494629`, FTP 265W)
