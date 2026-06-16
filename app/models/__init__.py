@@ -56,6 +56,9 @@ class User(Base):
     location_lon = Column(Float, nullable=True)  # Longitude for weather forecast
     weather_preference = Column(String(20), default="auto")  # "auto", "indoor", "outdoor"
 
+    # Discord integration — used by the Hermes agent to identify users
+    discord_user_id = Column(String(100), unique=True, nullable=True, index=True)
+
     # Encrypted API keys for external services
     intervals_api_key_encrypted = Column(String(512), nullable=True)
     intervals_athlete_id = Column(String(100), nullable=True)
