@@ -1,7 +1,7 @@
 """
 Per-User Training Query — get LLM-powered fitness advice for any registered Discord user.
 
-Fetches training data synced from Strava (via Intervals.icu), builds a structured
+Fetches training data from Intervals.icu, builds a structured
 context pack with all training metrics, and generates an LLM-powered recommendation.
 
 The context JSON is the primary output — the Hermes agent can feed it to any LLM.
@@ -88,7 +88,7 @@ def _call_llm(
 def _build_llm_messages(data: Dict[str, Any], template_type: str) -> tuple[str, str]:
     """Build system + user prompts for LLM from training data context.
 
-    Constructs a coaching prompt using the athlete's actual Strava-derived
+    Constructs a coaching prompt using the athlete's actual Intervals.icu
     training data (PMC, weekly summary, recent activities).
     """
     athlete = data.get("athlete", {})
@@ -138,7 +138,7 @@ def _build_llm_messages(data: Dict[str, Any], template_type: str) -> tuple[str, 
     context_str = "\n".join(ctx_lines)
 
     system_prompt = (
-        "You are an expert cycling coach. You analyse training data synced from Strava "
+        "You are an expert cycling coach. You analyse training data from Intervals.icu "
         "and provide personalised training recommendations. "
         "Always express power targets as percentages of FTP, never raw watts. "
         "Be specific, actionable, and encouraging. "
@@ -153,8 +153,7 @@ def _build_llm_messages(data: Dict[str, Any], template_type: str) -> tuple[str, 
     type_label = type_labels.get(template_type, "a training recommendation")
 
     user_prompt = (
-        f"Generate {type_label} based on this athlete's training data "
-        f"(synced from Strava via Intervals.icu):\n\n"
+        f"Generate {type_label} based on this athlete's training data from Intervals.icu:\n\n"
         f"{context_str}\n\n"
         "Provide your recommendation in clear markdown. "
         "If suggesting power or pace targets, use % of FTP."
@@ -480,8 +479,8 @@ def main():
         rec = _format_recommendation(data, template_type=template_type)
         print(rec)
     else:
-        # LLM-powered recommendation (DEFAULT) — Strava data in, LLM recommendation out
-        print("🤖 Generating LLM recommendation from Strava training data...", file=sys.stderr)
+        # LLM-powered recommendation (DEFAULT) — Intervals.icu data in, LLM recommendation out
+        print("🤖 Generating LLM recommendation from training data...", file=sys.stderr)
         try:
             system_prompt, user_prompt = _build_llm_messages(data, template_type)
             rec = _call_llm(system_prompt, user_prompt)
